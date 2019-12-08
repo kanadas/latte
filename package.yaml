@@ -25,13 +25,15 @@ dependencies:
 - containers
 - mtl
 - transformers
+- filepath
+- directory
 
 library:
   source-dirs: src
 
 executables:
   latte-exe:
-    main:                Main.hs
+    main:                Latte.hs
     source-dirs:         app
     ghc-options:
     - -threaded
@@ -40,13 +42,13 @@ executables:
     dependencies:
     - latte
 
-#tests:
-#  latte-test:
-#    main:                Spec.hs
-#    source-dirs:         test
-#    ghc-options:
-#    - -threaded
-#    - -rtsopts
-#    - -with-rtsopts=-N
-#    dependencies:
-#    - latte
+tests:
+  latte-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - latte

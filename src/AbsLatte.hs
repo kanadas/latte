@@ -4,7 +4,10 @@
 module AbsLatte where
 
 newtype Ident = Ident String
-  deriving (Eq, Ord, Show, Read)
+  deriving (Eq, Ord, Read)
+
+instance Show Ident where
+    show (Ident ident) = ident
 
 data Program = Program [TopDef]
   deriving (Eq, Ord, Show, Read)
