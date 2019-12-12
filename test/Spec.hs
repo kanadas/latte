@@ -1,6 +1,6 @@
 module Main where
 
---import System.IO ( stdin, hGetContents )
+import System.IO
 import System.Environment
 import System.Exit ( exitFailure, exitSuccess )
 import Control.Monad (when)
@@ -30,12 +30,13 @@ runFile v p f = putStrV v f >> readFile f >>= run v p
 run :: Verbosity -> ParseFun Program -> String -> IO Bool
 run _ p s = let ts = myLexer s in case p ts of
     Bad err -> do 
+        hPutStrLn stderr "ERROR"
         putStrLn "Parse Failed:"
         putStrLn $ err ++ "\n"
         return False
     Ok program -> case runCheckProgram program of
-        Right _ -> return True
-        Left exc -> putStrLn "Semantic check failed:" >> putStrLn (show exc) >> return False
+        Right _ -> hPutStrLn stderr "OK" >> return True
+        Left exc -> hPutStrLn stderr "ERROR" >> putStrLn "Semantic check failed:" >> putStrLn (show exc) >> return False
 
 allFilesIn :: FilePath -> IO [FilePath]
 allFilesIn dir = (map (dir++)) <$>

@@ -1,7 +1,7 @@
 module Main where
 
 
---import System.IO ( stdin, hGetContents )
+import System.IO
 import System.Environment ( getArgs {-, getProgName -})
 import System.Exit ( exitFailure, exitSuccess )
 import Control.Monad (when)
@@ -18,13 +18,6 @@ import Frontend
 
 import ErrM
 
-initialEnv :: TEnv
-initialEnv = Map.fromList [(Ident "printInt", Fun Void [Int]),
-    (Ident "printString", Fun Void [Str]),
-    (Ident "error", Fun Void []),
-    (Ident "readInt", Fun Int []),
-    (Ident "readString", Fun Str [])]
-
 type ParseFun a = [Token] -> Err a
 
 type Verbosity = Int
@@ -38,14 +31,15 @@ runFile v p f = putStrV v f >> readFile f >>= run v p
 run :: Verbosity -> ParseFun Program -> String -> IO ()
 run v p s = let ts = myLexer s in case p ts of
     Bad err -> do 
+        hPutStrLn stderr "ERROR"
         putStrLn "Parse Failed:"
         putStrV v "Tokens:"
         putStrV v $ show ts
         putStrLn $ err ++ "\n"
         exitFailure
     Ok program -> case runCheckProgram program of
-        Left _ -> exitSuccess
-        Right exc -> putStrLn "Semantic check failed:" >> putStrLn (show exc) >> exitFailure
+        Right _ -> hPutStrLn stderr "OK" >> exitSuccess
+        Left exc -> hPutStrLn stderr "ERROR" >> putStrLn "Semantic check failed:" >> putStrLn (show exc) >> exitFailure
 
 showTree :: (Show a, Print a) => Int -> a -> IO ()
 showTree v tree
