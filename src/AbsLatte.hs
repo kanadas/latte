@@ -43,11 +43,11 @@ data Type = Int | Str | Bool | Void | Fun Type [Type]
   deriving (Eq, Ord, Read)
 
 instance Show Type where
-	show Int = "int"
-	show Str = "string"
-	show Bool = "boolean"
-	show Void = "void"
-	show Fun t ts = (foldl (\acc tt -> acc ++ " " ++ (show tt)) "" ts) ++ " -> " ++ (show t)
+    show Int = "int"
+    show Str = "string"
+    show Bool = "boolean"
+    show Void = "void"
+    show (Fun t ts) = (foldl (\acc tt -> acc ++ " " ++ (show tt)) "" ts) ++ " -> " ++ (show t)
 
 data Expr
     = EVar Ident

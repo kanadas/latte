@@ -10,9 +10,6 @@ module Frontend (
     runCheckProgram
 )where
 
---import qualified Debug.Trace as Trace
-
---import Control.Monad
 import Control.Monad.Except
 import Control.Monad.Trans.Reader
 import Control.Monad.State.Lazy
@@ -22,7 +19,7 @@ import qualified Data.Set as Set
 import AbsLatte
 import PrintLatte
 
-data Exception = 
+data Exception =
       ERepeatedFun TopDef
     | ERepeatedArgName Ident TopDef
     | ENotReturning TopDef
@@ -42,13 +39,13 @@ instance Show Exception where
         ENotReturning topdef -> "Function without return: " ++ printFunHead topdef
         EUnknownVar ident trac -> "Unknown variable: " ++ show ident ++ " in: \n" ++ show trac
         EUnknownFun ident trac -> "Unknown function: " ++ show ident ++ " in: \n" ++ show trac
-        EArgMismatch t1 t2 trac -> "Not matching argument types, expected " ++ show t2 ++ 
+        EArgMismatch t1 t2 trac -> "Not matching argument types, expected " ++ show t2 ++
             " got " ++ show t1 ++ " in: \n" ++ show trac
         EWrongArgCnt trac -> "Wrong argument count in: \n" ++ show trac
         ENotAFun ident _ trac -> "Not a function: " ++ show ident ++ " in: \n" ++ show trac
-        ETypeMismatch expr t1 t2 trac -> "Mismatching types in " ++ printTree expr ++ 
+        ETypeMismatch expr t1 t2 trac -> "Mismatching types in " ++ printTree expr ++
             "\nExpected " ++ show t2 ++ ", got " ++ show t1 ++ " in: \n" ++ show trac
-        EDoubleDecl ident trac -> "Double declaration of symbol " ++ show ident ++ 
+        EDoubleDecl ident trac -> "Double declaration of symbol " ++ show ident ++
             " in \n" ++ show trac
         ENotImplemented -> "Not implemented functionality"
 
@@ -59,9 +56,9 @@ printFunHead (FnDef t ident arg _) = take (length s - 6) s ++ "\n"
 data Trace = Trace { tracFun :: TopDef, tracStmts :: [Stmt], tracExpr :: Maybe Expr }
 
 instance Show Trace where
-    show (Trace (FnDef _ ident _ _) stmts expr) = "  Function " ++ show ident ++ 
+    show (Trace (FnDef _ ident _ _) stmts expr) = "  Function " ++ show ident ++
             traceExpr expr ++ traceStmts stmts
-        where 
+        where
         traceExpr (Just e) = "\n  Expression:\n" ++ printTree e
         traceExpr Nothing = ""
         traceStmts (stmt:_) = "\n  Statement:\n" ++ printTree stmt
@@ -84,7 +81,7 @@ insideStmtTrace stmt trac = trac{tracExpr = Nothing, tracStmts = (stmt:tracStmts
 getCombEnv :: Result TEnv
 getCombEnv = do
     lenv <- get
-    asks $ (Map.union lenv).tenv   
+    asks $ (Map.union lenv).tenv
 
 argsMap :: [Arg] -> TEnv
 argsMap args = foldr (\(Arg t ident) acc -> Map.insert ident t acc) Map.empty args
@@ -122,7 +119,7 @@ checkStmt x = case x of
         env <- getCombEnv
         trac <- asks trace
         case env Map.!? ident of
-            Just t -> if t == te then return False 
+            Just t -> if t == te then return False
                 else throwError $ ETypeMismatch expr te t (insideStmtTrace x trac)
             Nothing -> throwError $ EUnknownVar ident (insideStmtTrace x trac)
     Incr ident -> do
@@ -143,17 +140,17 @@ checkStmt x = case x of
         te <- localCheckExpr x expr
         trac <- asks trace
         case tracFun trac of
-            FnDef t _ _ _ -> if t == te then return True 
+            FnDef t _ _ _ -> if t == te then return True
                 else throwError $ ETypeMismatch expr te t (insideStmtTrace x trac)
     VRet -> do
         trac <- asks trace
         case tracFun trac of
-            FnDef t ident _ _ -> if t == Void then return True 
+            FnDef t ident _ _ -> if t == Void then return True
                 else throwError $ ETypeMismatch (EVar ident) Void t (insideStmtTrace x trac)
     Cond expr stmt -> do
         te <- localCheckExpr x expr
         trac <- asks trace
-        if te == Bool then do 
+        if te == Bool then do
             env <- getCombEnv
             stat <- get
             put Map.empty
@@ -164,7 +161,7 @@ checkStmt x = case x of
     CondElse expr stmt1 stmt2 -> do
         te <- localCheckExpr x expr
         trac <- asks trace
-        if te == Bool then do 
+        if te == Bool then do
             env <- getCombEnv
             stat <- get
             put Map.empty
@@ -172,7 +169,7 @@ checkStmt x = case x of
             put Map.empty
             ret2 <- local ((\e -> e{tenv = env}).(appendTraceStmt x)) (checkStmt stmt2)
             put stat
-            if expr == ELitTrue && ret1 then return True 
+            if expr == ELitTrue && ret1 then return True
             else if expr == ELitFalse && ret2 then return True
             else if ret1 && ret2 then return True
             else return False
@@ -180,7 +177,7 @@ checkStmt x = case x of
     While expr stmt -> do
         te <- localCheckExpr x expr
         trac <- asks trace
-        if te == Bool then do 
+        if te == Bool then do
             env <- getCombEnv
             stat <- get
             put Map.empty
@@ -226,9 +223,9 @@ checkExpr x = case x of
         env <- getCombEnv
         trac <- asks trace
         case env Map.!? ident of
-            Just (Fun t ts) -> checkArgList args ts where 
-                checkArgList (a:as) (b:bs) = 
-                    if a == b then checkArgList as bs 
+            Just (Fun t ts) -> checkArgList args ts where
+                checkArgList (a:as) (b:bs) =
+                    if a == b then checkArgList as bs
                     else throwError $ EArgMismatch a b trac
                 checkArgList [] [] = return t
                 checkArgList _ _ = throwError $ EWrongArgCnt trac
@@ -242,7 +239,7 @@ checkExpr x = case x of
     Not expr -> do
         t <- checkExpr expr
         trac <- asks trace
-        if t == Bool then return Bool 
+        if t == Bool then return Bool
         else throwError $ ETypeMismatch expr t Bool trac
     EMul expr1 _ expr2 -> checkOp expr1 expr2 Int >> return Int
     EAdd expr1 Plus expr2 -> do
@@ -250,12 +247,12 @@ checkExpr x = case x of
         t2 <- checkExpr expr2
         trac <- asks trace
         if (t1 == t2 && (t1 == Int || t1 == Str)) then return t1
-        else throwError $ ETypeMismatch x 
-            (if t1 == Int || t1 == Str then t2 else t1) 
+        else throwError $ ETypeMismatch x
+            (if t1 == Int || t1 == Str then t2 else t1)
             (if t1 == Int || t1 == Str then t1 else if t2 == Int || t2 == Str then t2 else Int)
             trac
     EAdd expr1 _ expr2 -> checkOp expr1 expr2 Int >> return Int
-    ERel expr1 op expr2 -> 
+    ERel expr1 op expr2 ->
         if op == EQU || op == NE then do
             t1 <- checkExpr expr1
             t2 <- checkExpr expr2
@@ -265,7 +262,7 @@ checkExpr x = case x of
         else checkOp expr1 expr2 Int >> return Bool
     EAnd expr1 expr2 -> checkOp expr1 expr2 Bool >> return Bool
     EOr expr1 expr2 -> checkOp expr1 expr2 Bool >> return Bool
-    where 
+    where
     checkOp expr1 expr2 t = do
         t1 <- checkExpr expr1
         t2 <- checkExpr expr2
@@ -287,8 +284,8 @@ initialState :: SEnv
 initialState = Map.empty
 
 argsTypes :: TopDef -> [Arg] -> Either Exception [Type]
-argsTypes td args = reverse <$> fst <$> foldM (\(acc, set) (Arg t ident) -> 
-    if Set.member ident set then throwError (ERepeatedArgName ident td) 
+argsTypes td args = reverse <$> fst <$> foldM (\(acc, set) (Arg t ident) ->
+    if Set.member ident set then throwError (ERepeatedArgName ident td)
     else return (t : acc, Set.insert ident set)) ([], Set.empty) args
 
 getSymbols :: Program -> TEnv -> Either Exception TEnv
@@ -296,8 +293,8 @@ getSymbols (Program topdefs) initialSym =
     foldM addf initialSym topdefs
     where addf env topdef@(FnDef t ident args _) =
             if Map.member ident env then throwError (ERepeatedFun topdef)
-            else do 
-                at <- argsTypes topdef args 
+            else do
+                at <- argsTypes topdef args
                 return $ Map.insert ident (Fun t at) env
 
 runCheckProgram :: Program -> Either Exception ()
