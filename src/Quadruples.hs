@@ -1,17 +1,22 @@
 module Quadruples where
 
 import qualified Data.Map.Strict as Map
-import Data.DList
+import qualified Data.Set as Set
+import Data.DList(DList, singleton)
+import Data.Sort
 import Control.Monad.State
 import Control.Monad.Writer
 
 import qualified AbsLatte as AL(MulOp(..), RelOp(..))
 import AbsLatte(AddOp(..), Stmt(..), Item(..), Expr(..), Ident(..), Block(..))
 
-data Val = Var Int | VInt Integer | VBool Bool | VString String | VVoid
+newtype Variable = Variable Int
     deriving (Eq, Ord)
 
-data Label = Label Int
+newtype Label = Label Int
+    deriving (Eq, Ord)
+
+data Val = Var Variable | VInt Integer | VBool Bool | VString String | VVoid
     deriving (Eq, Ord)
 
 data Op
@@ -58,7 +63,7 @@ liftLabels :: (Int -> Int) -> QState -> QState
 liftLabels f s = s{labels = f (vars s)}
 
 incVars :: Result Val
-incVars = Var <$> (modify (liftVars (+1)) >> gets vars)
+incVars = Var <$> Variable <$> (modify (liftVars (+1)) >> gets vars)
 
 incLabels :: Result Label
 incLabels = Label <$> (modify (liftLabels (+1)) >> gets labels)
@@ -182,4 +187,62 @@ convertRelOp x = case x of
   AL.GE -> GE
   AL.EQU -> EQU
   AL.NE -> NE
+
+type Graph = Map.Map Variable [Variable]
+type ListGraph = [(Variable, [Variable])]
+type Colloring = Map.Map Variable Int
+
+getVariables :: Quadruple -> [Variable]
+getVariables q = case q of
+    QAss v1 v2 ->
+        let r1 = case v1 of Var v -> [v]; _ -> [] in
+        case v2 of Var v -> v:r1; _ -> r1
+    QOp v1 v2 _ v3 ->
+        let r1 = case v1 of Var v -> [v]; _ -> [] in
+        let r2 = case v2 of Var v -> v:r1; _ -> [] in
+        case v3 of Var v -> v:r2; _ -> r2
+    QNeg v1 v2 ->
+        let r1 = case v1 of Var v -> [v]; _ -> [] in
+        case v2 of Var v -> v:r1; _ -> r1
+    QNot v1 v2 ->
+        let r1 = case v1 of Var v -> [v]; _ -> [] in
+        case v2 of Var v -> v:r1; _ -> r1
+    QIf (Var v) _ -> [v]
+    QIfNot (Var v) _ -> [v]
+    QPush (Var v) -> [v]
+    QCall (Var v) _ -> [v]
+    QRet (Var v) -> [v]
+    _ -> []
+
+removeDups :: Ord a => [a] -> [a]
+removeDups l = snd $ foldl f (Set.empty, []) l where
+    f (s, a) v = if Set.member v s then (s, a) else (Set.insert v s, v:a)
+
+collisionGraph :: [Quadruple] -> ListGraph
+collisionGraph quads =
+    let variables = removeDups $ foldl (\acc q -> (getVariables q) ++ acc) [] quads in
+    foldl foldVars [] variables where
+        foldVars acc v =  (v, (removeDups $ foldl foldQuads [] quads)) : acc where
+            foldQuads a q = if elem v qv then (filter (/= v) qv) ++ a else a where
+                qv = getVariables q
+
+graphColloring :: ListGraph -> (Colloring, Int)
+graphColloring g =
+    orderedGraphColloring (sortOn (\(_, l) -> length l) g)
+
+
+orderedGraphColloring :: ListGraph -> (Colloring, Int)
+orderedGraphColloring g = foldl foldGraph (Map.empty, 0) g where
+    foldGraph (coloring, nc) (v, l) =
+        (Map.insert v color coloring, if color < nc then nc else nc + 1) where
+        color = mexSorted 0 (sort (map (coloring Map.!) (filter (`Map.member` coloring) l))) where
+            mexSorted n (x:xs) = if x == n then mexSorted (n+1) xs else n
+            mexSorted n [] = n
+
+nextUse :: Variable -> [Quadruple] -> Maybe Int
+nextUse v q = nextUseAcum v q 1
+
+nextUseAcum :: Variable -> [Quadruple] -> Int -> Maybe Int
+nextUseAcum _ [] _ = Nothing
+nextUseAcum v (x:xs) a = if elem v (getVariables x) then Just a else nextUseAcum v xs (a+1)
 

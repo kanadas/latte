@@ -28,6 +28,7 @@ dependencies:
 - filepath
 - directory
 - dlist
+- sort
 
 library:
   source-dirs: src
