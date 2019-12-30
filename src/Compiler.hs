@@ -6,11 +6,31 @@ import Control.Monad.RWS
 import Quadruples
 import AbsLatte
 
-arch_registers :: Int
-arch_registers = 14
-
-newtype Register = Register Int
+data Register = RAX | RBX | RCX | RDX | RSI | RDI | R8 | R9 | R10 | R11 | R12 |R13 | R14 | R15
     deriving (Eq, Ord)
+
+saved_registers :: [Register]
+saved_registers = [RBX, RCX, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15, RDX]
+
+n_arch_registers :: Int
+n_arch_registers = 14
+
+instance Show Register where
+    show reg = case reg of
+        RBX -> "%rbx"
+        RCX -> "%rcx"
+        RSI -> "%rsi"
+        RDI -> "%rdi"
+        R8 -> "%r8"
+        R9 -> "%r9"
+        R10 -> "%r10"
+        R11 -> "%r11"
+        R12 -> "%r12"
+        R13 -> "%r13"
+        R14 -> "%r14"
+        R15 -> "%r15"
+        RDX -> "%rdx"
+        RAX -> "%rax"
 
 newtype MemOffset = MemOff Int
     deriving (Eq, Ord)
@@ -20,41 +40,29 @@ data Location = Reg Register | MemRel MemOffset
 
 instance Show Location where
     show loc = case loc of
-        Reg (Register 0) -> "%rbx"
-        Reg (Register 1) -> "%rcx"
-        Reg (Register 2) -> "%rsi"
-        Reg (Register 3) -> "%rdi"
-        Reg (Register 4) -> "%r8"
-        Reg (Register 5) -> "%r9"
-        Reg (Register 6) -> "%r10"
-        Reg (Register 7) -> "%r11"
-        Reg (Register 8) -> "%r12"
-        Reg (Register 9) -> "%r13"
-        Reg (Register 10) -> "%r14"
-        Reg (Register 11) -> "%r15"
-        Reg (Register 12) -> "%rdx"
-        Reg (Register 13) -> "%rax"
-        Reg _ -> error "unknown register"
-        MemRel (MemOff n) -> (show n) ++ "(%ebp)"
+        Reg r -> show r
+        MemRel (MemOff n) -> (show n) ++ "(%rbp)"
 
 showb :: Location -> String
 showb loc = case loc of
-    Reg (Register 0) -> "%bl"
-    Reg (Register 1) -> "%cl"
-    Reg (Register 2) -> "%sil"
-    Reg (Register 3) -> "%dil"
-    Reg (Register 4) -> "%r8b"
-    Reg (Register 5) -> "%r9b"
-    Reg (Register 6) -> "%r10b"
-    Reg (Register 7) -> "%r11b"
-    Reg (Register 8) -> "%r12b"
-    Reg (Register 9) -> "%r13b"
-    Reg (Register 10) -> "%r14b"
-    Reg (Register 11) -> "%r15b"
-    Reg (Register 12) -> "%dl"
-    Reg (Register 13) -> "%al"
-    Reg _ -> error "unknown register"
-    MemRel (MemOff n) -> (show (n + 7)) ++ "(%ebp)"
+    Reg RBX -> "%bl"
+    Reg RCX -> "%cl"
+    Reg RSI -> "%sil"
+    Reg RDI -> "%dil"
+    Reg R8  -> "%r8b"
+    Reg R9  -> "%r9b"
+    Reg R10 -> "%r10b"
+    Reg R11 -> "%r11b"
+    Reg R12 -> "%r12b"
+    Reg R13 -> "%r13b"
+    Reg R14 -> "%r14b"
+    Reg R15 -> "%r15b"
+    Reg RDX -> "%dl"
+    Reg RAX -> "%al"
+    MemRel (MemOff n) -> (show (n + 7)) ++ "(%rbp)"
+
+instance Show Label where
+    show (Label l) = "_l" ++ show l
 
 type Color = Int
 type LEnv = Map.Map Color Location
@@ -94,7 +102,7 @@ liftNColors f s = s{n_colors = f (n_colors s)}
 getColor :: Variable -> Result Color
 getColor v = (Map.! v) <$> asks coloring
 
-getMaybeColor :: Location -> Result (Maybe Color)
+getMaybeColor :: Val -> Result (Maybe Color)
 getMaybeColor v = case v of
     Var var -> Just <$> getColor var
     _ -> return Nothing
@@ -124,6 +132,9 @@ assignLocation c = do
                 [] -> error "No free location"
                 (l:ls) -> modify ((liftLocations (\_ -> ls)).(liftLEnv (\e -> Map.insert c l e)))
                     >> return l
+
+usedRegisters :: [Location] -> [Register]
+usedRegisters locs = filter (\reg -> not $ elem (Reg reg) locs) saved_registers
 
 failure :: Show a => a -> Result ()
 failure x = return ()
@@ -165,49 +176,48 @@ compileQuadruples num (quad:quads) = compileQuadruple quad >> compileQuadruples 
                     n <- gets n_strings
                     tell $ singleton $ "movq _s" ++ show n ++ ", " ++ show loc
                 VStrRef v -> compileQuadruple (QAss (Var var) (Var v))
-        QOp (Var var) val1 op val2 -> do
-            if op == Div || op == Mod then compileDiv var val1 op val2
-            else if op == Concat then compileConcat var val1 op val2
+        QOp (Var res) arg1 operation arg2 -> do
+            if operation == ODiv || operation == OMod then compileDiv res arg1 operation arg2
+            else if operation == OConcat then compileConcat res arg1 arg2
             else do
-                tcol <- getColor var
-                tloc <- assignLocation tcol
-                mcol1 <- getMaybeColor val1
-                mcol2 <- getMaybeColor var2
+                tcol <- getColor res
+                mcol1 <- getMaybeColor arg1
+                mcol2 <- getMaybeColor arg2
                 case mcol1 of
                     Just col1 | col1 == tcol -> do
-                        compileQuadruple (QAss (Var var) val1)
-                        compileOperation var op val2
+                        compileQuadruple (QAss (Var res) arg1)
+                        compileOperation res operation arg2
                     _ -> case mcol2 of
-                        Just col2 | col2 == tcol -> case op of
-                            Sub -> do
-                                compileQuadruple (QNeg (Var var) val2)
-                                compileOperation var Add val1
-                            LTH -> swapOrder GTH
-                            LE -> swapOrder GE
-                            GTH -> swapOrder LTH
-                            GE -> swapOrder LE
-                            _ -> swapOrder op
+                        Just col2 | col2 == tcol -> case operation of
+                            OSub -> do
+                                compileQuadruple (QNeg (Var res) arg2)
+                                compileOperation res OAdd arg1
+                            OLTH -> swapOrder OGTH
+                            OLE -> swapOrder OGE
+                            OGTH -> swapOrder OLTH
+                            OGE -> swapOrder OLE
+                            _ -> swapOrder operation
                             where
                             swapOrder o = do
-                                compileQuadruple (QAss (Var var) var2)
-                                compileOperation var o var1
+                                compileQuadruple (QAss (Var res) arg2)
+                                compileOperation res o arg1
                         _ -> do
-                            compileQuadruple (QAss (Var var) val1)
-                            compileOperation var op val2
+                            compileQuadruple (QAss (Var res) arg1)
+                            compileOperation res operation arg2
             where
             compileOperation var op val = do
                 tcol <- getColor var
                 tloc <- assignLocation tcol
-                (sstr, ntloc) <- case val2 of
+                (sstr, ntloc) <- case val of
                     Var var2 -> do
                         scol <- getColor var2
                         sloc <- getLocationErr scol
-                        tloc <- case (tloc, sloc) of
+                        ntloc <- case (tloc, sloc) of
                             (MemRel _, MemRel _) -> swapToRegister quads tcol
-                            (MemRel _, _) | op == Mul -> swapToRegister quads tcol
+                            (MemRel _, _) | op == OMul -> swapToRegister quads tcol
                             _ -> return tloc
-                        return (show sloc, tloc)
-                    VInt int | op == Mul -> return ("$" ++ show int ++ ", " ++ show tloc, tloc)
+                        return (show sloc, ntloc)
+                    VInt int | op == OMul -> return ("$" ++ show int ++ ", " ++ show tloc, tloc)
                     VInt int -> return ("$" ++ show int, tloc)
                     VBool b -> return ("$" ++ if b then "1" else "0", tloc)
                     VString str -> do
@@ -216,35 +226,168 @@ compileQuadruples num (quad:quads) = compileQuadruple quad >> compileQuadruples 
                         return ("_s" ++ show n, tloc)
                     VStrRef _ -> error "string operation not allowed here"
                 case op of
-                    Add -> tell $ singleton $ "addq " ++ sstr ++ ", " ++ show ntloc
-                    Sub -> tell $ singleton $ "subq " ++ sstr ++ ", " ++ show ntloc
-                    Mul -> tell $ singleton $ "imulq " ++ sstr ++ ", " ++ show ntloc
-                    And -> tell $ singleton $ "andq " ++ sstr ++ ", " ++ show ntloc
-                    Or -> tell $ singleton $ "orq " ++ sstr ++ ", " ++ show ntloc
-                    LTH -> tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
+                    OAdd -> tell $ singleton $ "addq " ++ sstr ++ ", " ++ show ntloc
+                    OSub -> tell $ singleton $ "subq " ++ sstr ++ ", " ++ show ntloc
+                    OMul -> tell $ singleton $ "imulq " ++ sstr ++ ", " ++ show ntloc
+                    OLTH -> tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
                                             "setl " ++ showb ntloc]
-                    LE ->tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
+                    OLE -> tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
                                             "setle " ++ showb ntloc]
-                    GTH ->tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
+                    OGTH -> tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
                                             "setg " ++ showb ntloc]
-                    GE ->tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
+                    OGE -> tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
                                             "setge " ++ showb ntloc]
-                    EQU ->tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
+                    OEQU -> tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
                                             "sete " ++ showb ntloc]
-                    NE ->tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
+                    ONE -> tell $ fromList ["cmp " ++ show ntloc ++ ", " ++ sstr,
                                             "setne " ++ showb ntloc]
                     _ -> error $ "operation " ++ show op ++ " not allowed here"
-            compileDiv var val1 op val2 =
-            compileConcat var val1 op val2 =
-        QNeg val1 val2 -> return ()
-        QNot val1 val2 -> return ()
-        QIf val1 op val2 label -> return ()
-        QJmp label -> return ()
-        QLabel label -> return ()
-        QPush val -> return ()
-        QCall val ident -> return ()
-        QRet val -> return ()
-        QRetV -> return ()
+            compileDiv var val1 op val2 = do
+                tloc <- getColor var >>= assignLocation
+                locs <- gets locations
+                if not (elem (Reg RDX) locs) && (tloc /= Reg RDX || op == ODiv) then
+                    tell $ singleton $ "pushq %rdx"
+                else return ()
+                if not (elem (Reg RAX) locs) && (tloc /= Reg RAX || op == OMod) then
+                    tell $ singleton $ "pushq %rax"
+                else return ()
+                case val1 of
+                    Var v -> do
+                        scol <- getColor v
+                        sloc <- getLocationErr scol
+                        if sloc /= Reg RAX then
+                            tell $ singleton $ "movq " ++ show sloc ++ ", %rax"
+                        else return ()
+                    VInt int -> tell $ singleton $ "movq $" ++ show int ++ ", %rax"
+                    _ -> error "not supported div operand"
+                tell $ fromList ["movq $" ++ show ((2^(63::Integer))::Integer) ++ ", %rdx",
+                                "andq %rax, %rdx",
+                                "andq $" ++ show ((2^(63::Integer) - 1)::Integer) ++ ", %rax"]
+                case val2 of
+                    Var v -> do
+                        scol <- getColor v
+                        sloc <- getLocationErr scol
+                        tell $ singleton $ "idivq " ++ show sloc
+                    VInt int -> tell $ singleton $ "idivq $" ++ show int
+                    _ -> error "not a div operand"
+                case op of
+                    ODiv | tloc == Reg RAX -> return ()
+                    ODiv -> tell $ singleton $ "movq %rax, " ++ show tloc
+                    OMod | tloc == Reg RDX -> return ()
+                    OMod -> tell $ singleton $ "movq $rdx, " ++ show tloc
+                    _ -> error "not a div operator"
+                if not (elem (Reg RAX) locs) && (tloc /= Reg RAX || op == OMod) then
+                    tell $ singleton $ "popq %rax"
+                else return ()
+                if not (elem (Reg RDX) locs) && (tloc /= Reg RDX || op == ODiv) then
+                    tell $ singleton $ "popq %rdx"
+                else return ()
+            compileConcat var val1 val2 =
+                compileQuadruple (QCall (Var var) (Ident "_concat") [val1, val2])
+        QNeg (Var var) val -> do
+            tloc <- getColor var >>= assignLocation
+            case val of
+                Var v -> do
+                    sloc <- getColor v >>= getLocationErr
+                    if sloc /= tloc then
+                        tell $ singleton $ "movq " ++ show sloc ++ ", " ++ show tloc
+                    else return ()
+                    tell $ fromList ["notq " ++ show tloc, "addq $1, " ++ show tloc]
+                VInt int -> tell $ singleton $ "movq $" ++ show (-int) ++ ", " ++ show tloc
+                _ -> error $ "cannot negate " ++ show val
+        QNot (Var var) val -> do
+            tloc <- getColor var >>= assignLocation
+            case val of
+                Var v -> do
+                    sloc <- getColor v >>= getLocationErr
+                    if sloc /= tloc then
+                        tell $ singleton $ "movq " ++ show sloc ++ ", " ++ show tloc
+                    else return ()
+                    tell $ singleton $ "notq " ++ show tloc
+                VBool b -> tell $ singleton $ "movq $" ++ (if b then "0" else "1") ++
+                                            ", " ++ show tloc
+                _ -> error $ "cannot not " ++ show val
+        QIf val1 op val2 label -> do
+            str1 <- valToStr val1
+            str2 <- valToStr val2
+            case op of
+                OLTH -> tell $ fromList ["cmpq " ++ str1 ++ ", " ++ str2, "jlt " ++ show label]
+                OLE -> tell $ fromList ["cmpq " ++ str1 ++ ", " ++ str2, "jle " ++ show label]
+                OGTH -> tell $ fromList ["cmpq " ++ str1 ++ ", " ++ str2, "jgt " ++ show label]
+                OGE -> tell $ fromList ["cmpq " ++ str1 ++ ", " ++ str2, "jge " ++ show label]
+                OEQU -> case val1 of
+                    VString str -> return () --TODO string compare
+                    VStrRef var -> return () --TODO string compare
+                    _ -> tell $ fromList ["cmpq " ++ str1 ++ ", " ++ str2, "jeq " ++ show label]
+                ONE -> case val1 of
+                    VString str -> return () --TODO string compare
+                    VStrRef var -> return () --TODO string compare
+                    _ -> tell $ fromList ["cmpq " ++ str1 ++ ", " ++ str2, "jne " ++ show label]
+                _ -> error $ "not an if operation: " ++ show op
+            where
+            valToStr val = case val of
+                Var var -> show <$> (getColor var >>= getLocationErr)
+                VInt int -> return $ "$" ++ show int
+                VBool b -> return $ if b then "$1" else "$0"
+                VString str -> do
+                    modify $ (liftStrings (str:)) . (liftNStrings (+1))
+                    n <- gets n_strings
+                    return $ "_s" ++ show n
+                VStrRef v -> valToStr (Var v)
+        QJmp label -> tell $ singleton $ "jmp " ++ show label
+        QLabel label -> tell $ singleton $ show label ++ ":"
+        QCall (Var var) (Ident fun) args -> do
+            locs <- gets locations
+            tcol <- getColor var
+            tloc <- assignLocation tcol
+            if not (elem (Reg RAX) locs) && tloc /= Reg RAX then
+                tell $ singleton $ "pushq %rax"
+            else return ()
+            mapM_ compilePush (reverse args)
+            tell $ singleton $ "call " ++ fun
+            if tloc /= Reg RAX then
+                tell $ singleton $ "movq %rax, " ++ show tloc
+            else return ()
+            if args /= [] then
+                tell $ singleton $ "addq $rsp, " ++ show (8 * length args)
+            else return ()
+            if not (elem (Reg RAX) locs) && tloc /= Reg RAX then
+                tell $ singleton $ "popq %rax"
+            else return ()
+            where
+            compilePush val = do
+                case val of
+                    Var v -> do
+                        sloc <- getColor v >>= getLocationErr
+                        tell $ singleton $ "pushq " ++ show sloc
+                    VInt int -> tell $ singleton $ "pushq $" ++ show int
+                    VBool b -> tell $ singleton $ "pushq $" ++ (if b then "1" else "0")
+                    VStrRef v -> compilePush (Var v)
+                    VString str -> do
+                        modify $ (liftStrings (str:)) . (liftNStrings (+1))
+                        n <- gets n_strings
+                        tell $ singleton $ "pushq _s" ++ show n
+        QRet val -> do
+            case val of
+                Var v -> do
+                    loc <- getColor v >>= getLocationErr
+                    tell $ singleton $ "movq " ++ show loc ++ ", %rax"
+                VInt int -> tell $ singleton $ "movq $" ++ show int ++ ", %rax"
+                VBool b -> tell $ singleton $ "movq $" ++ (if b then "1" else "0") ++ ", %rax"
+                VString str ->do
+                    modify $ (liftStrings (str:)) . (liftNStrings (+1))
+                    n <- gets n_strings
+                    tell $ singleton $ "movq _s" ++ show n ++ ", %rax"
+                VStrRef v -> compileQuadruple (QRet (Var v))
+            used_regs <- (map ("popq " ++)) <$> (map show) <$> reverse <$>
+                    usedRegisters <$> gets locations
+            tell $ fromList used_regs
+            tell $ fromList ["popq %rbp", "ret"]
+        QRetV -> do
+            used_regs <- (map ("popq " ++)) <$> (map show) <$> reverse <$>
+                    usedRegisters <$> gets locations
+            tell $ fromList used_regs
+            tell $ fromList ["popq %rbp", "ret"]
         _ -> error "wrong quadruple"
 
 swapToRegister :: [Quadruple] -> Color -> Result Location

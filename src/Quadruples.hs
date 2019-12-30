@@ -14,42 +14,37 @@ module Quadruples(
     getVariables
 ) where
 
---TODO lazy counting all logical expressions
-
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import Data.DList(DList, singleton, toList)
+import Data.DList(DList, singleton, toList, fromList)
 import Data.Sort
 import Control.Monad.State
 import Control.Monad.Writer
 
-import qualified AbsLatte as AL(MulOp(..), RelOp(..))
-import AbsLatte(AddOp(..), Stmt(..), Item(..), Expr(..), Ident(..), Block(..), TopDef(..),Type(..))
+import AbsLatte
 
 newtype Variable = Variable Int
-    deriving (Eq, Ord)
+    deriving (Eq, Ord, Show)
 
 newtype Label = Label Int
     deriving (Eq, Ord)
 
 data Val = Var Variable | VInt Integer | VBool Bool | VString String | VStrRef Variable
-    deriving Eq
+    deriving (Eq, Show)
 
 data Op
-    = Add
-    | Sub
-    | Mul
-    | Div
-    | Mod
-    | And
-    | Or
-    | LTH
-    | LE
-    | GTH
-    | GE
-    | EQU
-    | NE
-    | Concat
+    = OAdd
+    | OSub
+    | OMul
+    | ODiv
+    | OMod
+    | OLTH
+    | OLE
+    | OGTH
+    | OGE
+    | OEQU
+    | ONE
+    | OConcat
     deriving (Eq, Show)
 
 data Quadruple
@@ -60,8 +55,7 @@ data Quadruple
     | QIf Val Op Val Label
     | QJmp Label
     | QLabel Label
-    | QPush Val
-    | QCall Val Ident
+    | QCall Val Ident [Val]
     | QRet Val
     | QRetV
     deriving Eq
@@ -89,9 +83,11 @@ incLabels :: Result Label
 incLabels = Label <$> (modify (liftLabels (+1)) >> gets labels)
 
 convertTopDef :: Int -> TopDef -> ([Quadruple], Coloring, Int)
-convertTopDef fst_label (FnDef t _ _ block) =
+convertTopDef fst_label (FnDef t _ args block) =
+    let (argEnv, nargs) = foldl (\(acc, n) (Arg _ arg) ->
+            (Map.insert arg (Var (Variable n)) acc, n + 1)) (Map.empty, 0) args in
     let res = toList $ execWriter (
-            evalStateT (convertBlock block) (QState Map.empty 0 fst_label Nothing)) in
+            evalStateT (convertBlock block) (QState argEnv nargs fst_label Nothing)) in
     let res2 = if t == Void && (last res /= QRetV) then res ++ [QRetV] else res in
     let (coloring, ncolors) = (graphColoring . collisionGraph) res in
     let res3 = filter filterNotUsedVars res2 where
@@ -103,6 +99,9 @@ convertTopDef fst_label (FnDef t _ _ block) =
             _ -> True in
     (res3, coloring, ncolors)
 
+--convertArg :: Arg -> Result ()
+--compileArg x = case x of
+--  Arg type_ ident -> failure x
 
 convertBlock :: Block -> Result ()
 convertBlock (Block stmts) = do
@@ -121,10 +120,10 @@ convertStmt x = case x of
         tell $ singleton $ QAss v r
     Incr ident -> do
         v <- gets $ (Map.! ident).venv
-        tell $ singleton $ QOp v v Add (VInt 1)
+        tell $ singleton $ QOp v v OAdd (VInt 1)
     Decr ident -> do
         v <- gets $ (Map.! ident).venv
-        tell $ singleton $ QOp v v Sub (VInt 1)
+        tell $ singleton $ QOp v v OSub (VInt 1)
     Ret expr -> do
         v <- convertExpr expr
         tell $ singleton $ QRet v
@@ -163,7 +162,7 @@ convertStmt x = case x of
         _ <- convertExpr expr
         modify $ liftIfLabels (\_ -> Nothing)
         tell $ singleton $ QLabel lend
-    SExp _ -> return () --I think all expressions are immutable
+    SExp expr -> convertExpr expr >> return ()
 
 convertItem :: Type -> Item -> Result ()
 convertItem t x = case x of
@@ -200,9 +199,9 @@ convertExpr x = case x of
             Just (_, lfalse) -> tell $ singleton $ QJmp lfalse
         return $ VBool False
     EApp ident exprs -> do
-        mapM_ (\expr -> convertExpr expr >>= (\v -> tell $ singleton $ QPush v)) (reverse exprs)
+        args <- foldM (\acc expr -> (:acc) <$> convertExpr expr) [] (reverse exprs)
         v <- incVars
-        tell $ singleton $ QCall v ident
+        tell $ singleton $ QCall v ident args
         return v
     EString string -> return $ VString string
     Neg expr -> do
@@ -217,40 +216,80 @@ convertExpr x = case x of
         return nv
     EMul expr1 mulop expr2 -> convertOp expr1 (convertMulOp mulop) expr2
     EAdd expr1 addop expr2 -> convertOp expr1 (convertAddOp addop) expr2
-    ERel expr1 relop expr2 -> convertIfOp expr1 (convertRelOp relop) expr2
-    EAnd expr1 expr2 -> convertIfOp expr1 And expr2
-    EOr expr1 expr2 -> convertIfOp expr1 Or expr2
+    ERel expr1 relop expr2 -> do
+        in_if <- gets if_labels
+        case in_if of
+            Nothing -> convertOp expr1 (convertRelOp relop) expr2
+            Just (ltrue, lfalse) -> do
+                v1 <- convertExpr expr1
+                v2 <- convertExpr expr2
+                tell $ singleton $ QIf v1 (convertRelOp relop) v2 ltrue
+                tell $ singleton $ QJmp lfalse
+                return v2
+    EAnd expr1 expr2 -> do
+        in_if <- gets if_labels
+        case in_if of
+            Nothing -> do
+                ltrue1 <- incLabels
+                ltrue2 <- incLabels
+                lfalse <- incLabels
+                lend <- incLabels
+                nv <- incVars
+                modify $ liftIfLabels (\_ -> Just (ltrue1, lfalse))
+                _ <- convertExpr expr1
+                tell $ singleton $ QLabel ltrue1
+                modify $ liftIfLabels (\_ -> Just (ltrue2, lfalse))
+                _ <- convertExpr expr2
+                modify $ liftIfLabels (\_ -> Nothing)
+                tell $ fromList [QLabel ltrue2,
+                                QAss nv (VBool True),
+                                QJmp lend,
+                                QLabel lfalse,
+                                QAss nv (VBool False),
+                                QLabel lend]
+                return nv
+            Just (ltrue, lfalse) -> do
+                lmid <- incLabels
+                modify $ liftIfLabels (\_ -> Just (lmid, lfalse))
+                _ <- convertExpr expr1
+                modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
+                convertExpr expr2
+    EOr expr1 expr2 ->  do
+        in_if <- gets if_labels
+        case in_if of
+            Nothing -> do
+                lfalse1 <- incLabels
+                lfalse2 <- incLabels
+                ltrue <- incLabels
+                lend <- incLabels
+                nv <- incVars
+                modify $ liftIfLabels (\_ -> Just (ltrue, lfalse1))
+                _ <- convertExpr expr1
+                tell $ singleton $ QLabel lfalse1
+                modify $ liftIfLabels (\_ -> Just (ltrue, lfalse2))
+                _ <- convertExpr expr2
+                modify $ liftIfLabels (\_ -> Nothing)
+                tell $ fromList [QLabel lfalse2,
+                                QAss nv (VBool False),
+                                QJmp lend,
+                                QLabel ltrue,
+                                QAss nv (VBool True),
+                                QLabel lend]
+                return nv
+            Just (ltrue, lfalse) -> do
+                    lmid <- incLabels
+                    modify $ liftIfLabels (\_ -> Just (ltrue, lmid))
+                    _ <- convertExpr expr1
+                    modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
+                    convertExpr expr2
     where
     convertOp e1 op e2 = do
         v1 <- convertExpr e1
         v2 <- convertExpr e2
         nv <- incVars
-        let nop = if op == Add && (isString v1) then Concat else op
+        let nop = if op == OAdd && (isString v1) then OConcat else op
         tell $ singleton $ QOp nv v1 nop v2
         return nv
-    convertIfOp e1 op e2 = do
-        in_if <- gets if_labels
-        case in_if of
-            Nothing -> convertOp e1 op e2
-            Just (ltrue, lfalse) -> case op of
-                And -> do
-                    lmid <- incLabels
-                    modify $ liftIfLabels (\_ -> Just (lmid, lfalse))
-                    _ <- convertExpr e1
-                    modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
-                    convertExpr e2
-                Or -> do
-                    lmid <- incLabels
-                    modify $ liftIfLabels (\_ -> Just (ltrue, lmid))
-                    _ <- convertExpr e1
-                    modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
-                    convertExpr e2
-                _ -> do
-                    v1 <- convertExpr e1
-                    v2 <- convertExpr e2
-                    tell $ singleton $ QIf v1 op v2 ltrue
-                    tell $ singleton $ QJmp lfalse
-                    return v2
 
 isString :: Val -> Bool
 isString x = case x of
@@ -260,23 +299,23 @@ isString x = case x of
 
 convertAddOp :: AddOp -> Op
 convertAddOp x = case x of
-  Plus -> Add
-  Minus -> Sub
+  Plus -> OAdd
+  Minus -> OSub
 
-convertMulOp :: AL.MulOp -> Op
+convertMulOp :: MulOp -> Op
 convertMulOp x = case x of
-  AL.Times -> Mul
-  AL.Div -> Div
-  AL.Mod -> Mod
+  Times -> OMul
+  Div -> ODiv
+  Mod -> OMod
 
-convertRelOp :: AL.RelOp -> Op
+convertRelOp :: RelOp -> Op
 convertRelOp x = case x of
-  AL.LTH -> LTH
-  AL.LE -> LE
-  AL.GTH -> GTH
-  AL.GE -> GE
-  AL.EQU -> EQU
-  AL.NE -> NE
+  LTH -> OLTH
+  LE -> OLE
+  GTH -> OGTH
+  GE -> OGE
+  EQU -> OEQU
+  NE -> ONE
 
 type Graph = Map.Map Variable [Variable]
 type ListGraph = [(Variable, [Variable])]
@@ -293,7 +332,7 @@ getVariables q = case q of
     QIf v1 _ v2 _ ->
         let r1 = case v1 of Var v -> [v]; _ -> [] in
         case v2 of Var v -> v:r1; _ -> r1
-    QPush (Var v) -> [v]
+    QCall _ _ args -> foldl (\acc arg -> case arg of Var v -> v:acc; _ -> acc) [] args
     QRet (Var v) -> [v]
     _ -> []
 
@@ -315,8 +354,7 @@ getAllVariables q = case q of
     QIf v1 _ v2 _ ->
         let r1 = case v1 of Var v -> [v]; _ -> [] in
         case v2 of Var v -> v:r1; _ -> r1
-    QPush (Var v) -> [v]
-    QCall (Var v) _ -> [v]
+    QCall val _ args -> foldl (\acc arg -> case arg of Var v -> v:acc; _ -> acc) [] (val:args)
     QRet (Var v) -> [v]
     _ -> []
 
