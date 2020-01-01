@@ -14,6 +14,8 @@ module Quadruples(
     getVariables
 ) where
 
+--TODO change arg clique to sth better
+
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.DList(DList, singleton, toList, fromList)
@@ -22,6 +24,7 @@ import Control.Monad.State
 import Control.Monad.Writer
 
 import AbsLatte
+import Frontend(TEnv)
 
 newtype Variable = Variable Int
     deriving (Eq, Ord, Show)
@@ -64,7 +67,12 @@ data Quadruple
     deriving Eq
 
 type VEnv = Map.Map Ident Val
-data QState = QState {venv :: VEnv, vars :: Int, labels :: Int, if_labels :: Maybe (Label, Label)}
+data QState = QState {
+    venv :: VEnv
+    , vars :: Int
+    , labels :: Int
+    , if_labels :: Maybe (Label, Label)
+    , tenv :: TEnv}
 type Result a = StateT QState (Writer (DList Quadruple)) a
 
 liftVEnv :: (VEnv -> VEnv) -> QState -> QState
@@ -85,12 +93,12 @@ incVars = Var <$> Variable <$> (modify (liftVars (+1)) >> gets vars)
 incLabels :: Result Label
 incLabels = Label <$> (modify (liftLabels (+1)) >> gets labels)
 
-convertTopDef :: Int -> TopDef -> ([Quadruple], Coloring)
-convertTopDef fst_label (FnDef t _ args block) =
+convertTopDef :: Int -> TEnv -> TopDef -> ([Quadruple], Coloring)
+convertTopDef fst_label types (FnDef t _ args block) =
     let (argEnv, nargs) = foldl (\(acc, n) (Arg _ arg) ->
             (Map.insert arg (Var (Variable n)) acc, n + 1)) (Map.empty, 0) args in
     let res = toList $ execWriter (
-            evalStateT (convertBlock block) (QState argEnv nargs fst_label Nothing)) in
+            evalStateT (convertBlock block) (QState argEnv nargs fst_label Nothing types)) in
     let res2 = if t == Void && (last res /= QRetV) then res ++ [QRetV] else res in
     let (coloring, _) = (graphColoring . (collisionGraph nargs)) res in
     let res3 = filter filterNotUsedVars res2 where
@@ -101,10 +109,6 @@ convertTopDef fst_label (FnDef t _ args block) =
             QNot (Var v) _ -> Map.member v coloring
             _ -> True in
     (res3, coloring)
-
---convertArg :: Arg -> Result ()
---compileArg x = case x of
---  Arg type_ ident -> failure x
 
 convertBlock :: Block -> Result ()
 convertBlock (Block stmts) = do
@@ -203,7 +207,10 @@ convertExpr x = case x of
         return $ VBool False
     EApp ident exprs -> do
         args <- foldM (\acc expr -> (:acc) <$> convertExpr expr) [] (reverse exprs)
-        v <- incVars
+        ret_t <- (Map.! ident) <$> gets tenv
+        v <- if ret_t == Str then
+                VStrRef <$> Variable <$> (modify (liftVars (+1)) >> gets vars)
+            else incVars
         tell $ singleton $ QCall v ident args
         return v
     EString string -> return $ VString string

@@ -39,9 +39,9 @@ run v p s = let ts = myLexer s in case p ts of
         putStrLn $ err ++ "\n"
         exitFailure
     Ok program -> case runCheckProgram program of
-        Right _ -> do
+        Right types -> do
             hPutStrLn stderr "OK"
-            putStrLn $ compileProgram program
+            putStrLn $ compileProgram types program
             exitSuccess
         Left exc -> hPutStrLn stderr "ERROR" >> putStrLn "Semantic check failed:" >> putStrLn (show exc) >> exitFailure
 

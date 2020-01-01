@@ -297,8 +297,9 @@ getSymbols (Program topdefs) initialSym =
                 at <- argsTypes topdef args
                 return $ Map.insert ident (Fun t at) env
 
-runCheckProgram :: Program -> Either Exception ()
+runCheckProgram :: Program -> Either Exception TEnv
 runCheckProgram program = do
     symbols <- getSymbols program initialTEnv
     evalStateT (runReaderT (checkProgram program) (initialREnv symbols))  initialState
+    return symbols
 

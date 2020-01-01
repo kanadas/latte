@@ -8,6 +8,7 @@ import Control.Monad.Writer
 import Control.Monad.State
 import Quadruples
 import AbsLatte
+import Frontend(TEnv)
 
 data Register = RAX | RBX | RCX | RDX | RSI | RDI | R8 | R9 | R10 | R11 | R12 |R13 | R14 | R15
         | RSP | RBP
@@ -94,6 +95,7 @@ data Instruction
     | ISetge Location
     | ISete Location
     | ISetne Location
+    | IStrCmp
 
 parseLocation :: Int -> Location -> String
 parseLocation arg_off loc = case loc of
@@ -137,6 +139,16 @@ parseInstr ao instr = case instr of
     ISetge loc -> "setge " ++ parseLocation ao loc
     ISete loc -> "sete " ++ parseLocation ao loc
     ISetne loc -> "setne " ++ parseLocation ao loc
+    IStrCmp -> unlines ["xorl %ecx, %ecx",
+                        "notq %rcx",
+                        "xorl %eax, %eax",
+                        "repne scasb",
+                        "notq %rcx",
+                        "decq %rcx",
+                        "decq %rdi",
+                        "subq %rcx, %rdi",
+                        "cld",
+                        "repe cmpsb"]
 
 
 type Color = Int
@@ -202,8 +214,17 @@ assignLocation c = do
             locs <- gets locations
             case locs of
                 [] -> error "No free location"
-                (l:ls) -> modify ((liftLocations (\_ -> ls)).(liftLEnv (\e -> Map.insert c l e)))
-                    >> return l
+                (l:ls) -> do
+                    modify $ (liftLocations (\_ -> ls)) . (liftLEnv (Map.insert c l))
+                    case l of
+                        Reg reg -> modify $ liftRegisterColors (Map.insert reg c)
+                        _ -> return ()
+                    return l
+
+allocString :: String -> Result w Int
+allocString str = do
+    modify $ (liftStrings (str:)) . (liftNStrings (+1))
+    gets n_strings
 
 isRegister :: Location -> Bool
 isRegister (Reg _) = True
@@ -212,19 +233,23 @@ isRegister _ = False
 usedRegisters :: [Location] -> [Register]
 usedRegisters locs = filter (\reg -> not $ elem (Reg reg) locs) saved_registers
 
-compileProgram :: Program -> String
-compileProgram (Program topdefs) =
+stringDef :: Int -> String -> String
+stringDef n str = "_s" ++ show n ++ ": .long " ++ show (length str) ++
+    " .ascii \"" ++ str ++ "\""
+
+compileProgram :: TEnv -> Program -> String
+compileProgram types (Program topdefs) =
     let (instrs, fin_state) = runState
-            (foldM (\acc td -> (DList.append acc) <$> (compileTopDef td)) DList.empty topdefs)
+            (foldM (\acc td ->
+                (DList.append acc) <$> (compileTopDef types td)) DList.empty topdefs)
             (CState {lenv = Map.empty
                 , strings = []
                 , n_strings = 0
                 , labels = 0
                 , locations = []
                 , register_colors = Map.empty}) in
-    let str_defs = fst (foldr (\str (acc, n) ->
-            (("_s" ++ (show n) ++ ": .ascii \"" ++ str ++"\\0\"") : acc, n + 1))
-                  ([], 1 :: Integer) (strings fin_state)) in
+    let str_defs = fst (foldr (\str (acc, n) -> (stringDef n str : acc, n + 1))
+                  ([], 1 :: Int) (strings fin_state)) in
     unlines $ [".text"] ++
         str_defs ++
         [".global _main",
@@ -232,12 +257,12 @@ compileProgram (Program topdefs) =
         "call main"] ++
         toList instrs
 
-compileTopDef :: TopDef -> State CState (DList String)
-compileTopDef x = case x of
+compileTopDef :: TEnv -> TopDef -> State CState (DList String)
+compileTopDef types x = case x of
   FnDef _ (Ident fname) args _ -> do
     let endl = "_end_" ++ fname
     nxt_label <- gets labels
-    let (quadruples, color) = convertTopDef nxt_label x
+    let (quadruples, color) = convertTopDef nxt_label types x
     let nargs = length args
     mapM_ (\n -> modify (liftLEnv (Map.insert (color Map.! (Variable n)) (ArgVar n))))
         [0 .. nargs - 1]
@@ -277,8 +302,7 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                 VInt int -> tell $ singleton $ IMov (Const int) loc
                 VBool b -> tell $ singleton $ IMov (Const (if b then 1 else 0)) loc
                 VString s -> do
-                    modify $ (liftStrings (s:)) . (liftNStrings (+1))
-                    n <- gets n_strings
+                    n <- allocString s
                     tell $ singleton $ IMov (StrRef n) loc
                 VStrRef v -> compileQuadruple (QAss (Var var) (Var v))
         QOp (Var res) arg1 operation arg2 -> do
@@ -311,35 +335,48 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                             compileOperation res operation arg2
             where
             compileOperation var op val = do
-                tcol <- getColor var
-                tloc <- assignLocation tcol
-                (arg, ntloc) <- case val of
-                    Var var2 -> do
-                        scol <- getColor var2
-                        sloc <- getLocationErr scol
-                        ntloc <- if not (isRegister tloc) && (not (isRegister sloc) || op == OMul)
-                            then swapToRegister quads tcol
-                        else return tloc
-                        return (Loc sloc, ntloc)
-                    VInt int | op == OMul -> return (Const int, tloc)
-                    VInt int -> return (Const int, tloc)
-                    VBool b -> return (Const (if b then 1 else 0), tloc)
-                    VString str -> do
-                        modify $ (liftStrings (str:)) . (liftNStrings (+1))
-                        n <- gets n_strings
-                        return (StrRef n, tloc)
-                    VStrRef _ -> error "string operation not allowed here"
+                (arg, tloc) <- getOperands val
                 case op of
-                    OAdd -> tell $ singleton $ IAdd arg ntloc
-                    OSub -> tell $ singleton $ ISub arg ntloc
-                    OMul -> tell $ singleton $ IMul arg ntloc
-                    OLTH -> tell $ fromList [ICmp (Loc ntloc) arg, ISetl ntloc]
-                    OLE  -> tell $ fromList [ICmp (Loc ntloc) arg, ISetle ntloc]
-                    OGTH -> tell $ fromList [ICmp (Loc ntloc) arg, ISetg ntloc]
-                    OGE  -> tell $ fromList [ICmp (Loc ntloc) arg, ISetge ntloc]
-                    OEQU -> tell $ fromList [ICmp (Loc ntloc) arg, ISete ntloc]
-                    ONE  -> tell $ fromList [ICmp (Loc ntloc) arg, ISetne ntloc]
+                    OAdd -> tell $ singleton $ IAdd arg tloc
+                    OSub -> tell $ singleton $ ISub arg tloc
+                    OMul -> tell $ singleton $ IMul arg tloc
+                    OLTH -> tell $ fromList [ICmp (Loc tloc) arg, ISetl tloc]
+                    OLE  -> tell $ fromList [ICmp (Loc tloc) arg, ISetle tloc]
+                    OGTH -> tell $ fromList [ICmp (Loc tloc) arg, ISetg tloc]
+                    OGE  -> tell $ fromList [ICmp (Loc tloc) arg, ISetge tloc]
+                    OEQU -> do
+                        case val of
+                            VString _ -> compareStrings (Loc tloc) arg
+                            VStrRef _ -> compareStrings (Loc tloc) arg
+                            _ -> tell $ singleton $ ICmp (Loc tloc) arg
+                        tell $ singleton $ ISete tloc
+                    ONE  -> do
+                        case val of
+                            VString _ -> compareStrings (Loc tloc) arg
+                            VStrRef _ -> compareStrings (Loc tloc) arg
+                            _ -> tell $ singleton $ ICmp (Loc tloc) arg
+                        tell $ singleton $ ISetne tloc
                     _ -> error $ "operation " ++ show op ++ " not allowed here"
+                where
+                getOperands v = do
+                    tcol <- getColor var
+                    tloc <- assignLocation tcol
+                    case v of
+                        Var var2 -> do
+                            scol <- getColor var2
+                            sloc <- getLocationErr scol
+                            ntloc <- if not (isRegister tloc) &&
+                                        (not (isRegister sloc) || op == OMul) then
+                                    swapToRegister quads tcol
+                                else return tloc
+                            return (Loc sloc, ntloc)
+                        VInt int | op == OMul -> return (Const int, tloc)
+                        VInt int -> return (Const int, tloc)
+                        VBool b -> return (Const (if b then 1 else 0), tloc)
+                        VString str -> do
+                            n <- allocString str
+                            return (StrRef n, tloc)
+                        VStrRef var2 -> getOperands (Var var2)
             compileDiv var val1 op val2 = do
                 tloc <- getColor var >>= assignLocation
                 locs <- gets locations
@@ -412,14 +449,18 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                 OLE -> tell $ fromList [ICmp arg1 arg2, IJle label]
                 OGTH -> tell $ fromList [ICmp arg1 arg2, IJgt label]
                 OGE -> tell $ fromList [ICmp arg1 arg2, IJge label]
-                OEQU -> case val1 of
-                    VString str -> return () --TODO string compare
-                    VStrRef var -> return () --TODO string compare
-                    _ -> tell $ fromList [ICmp arg1 arg2, IJe label]
-                ONE -> case val1 of
-                    VString str -> return () --TODO string compare
-                    VStrRef var -> return () --TODO string compare
-                    _ -> tell $ fromList [ICmp arg1 arg2, IJne label]
+                OEQU -> do
+                    case val1 of
+                        VString _ -> compareStrings arg1 arg2
+                        VStrRef _ -> compareStrings arg1 arg2
+                        _ -> tell $ singleton $ ICmp arg1 arg2
+                    tell $ singleton $ IJe label
+                ONE -> do
+                    case val1 of
+                        VString _ -> compareStrings arg1 arg2
+                        VStrRef _ -> compareStrings arg1 arg2
+                        _ -> tell $ singleton $ ICmp arg1 arg2
+                    tell $ singleton $ IJne label
                 _ -> error $ "not an if operation: " ++ show op
             where
             valToArg val = case val of
@@ -427,8 +468,7 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                 VInt int -> return $ Const int
                 VBool b -> return $ Const $ if b then 1 else 0
                 VString str -> do
-                    modify $ (liftStrings (str:)) . (liftNStrings (+1))
-                    n <- gets n_strings
+                    n <- allocString str
                     return $ StrRef n
                 VStrRef v -> valToArg (Var v)
         QJmp label -> tell $ singleton $ IJmp label
@@ -463,8 +503,7 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                     VBool b -> tell $ singleton $ IPush (Const (if b then 1 else 0))
                     VStrRef v -> compilePush (Var v)
                     VString str -> do
-                        modify $ (liftStrings (str:)) . (liftNStrings (+1))
-                        n <- gets n_strings
+                        n <- allocString str
                         tell $ singleton $ IPush (StrRef n)
         QRet val -> do
             case val of
@@ -473,9 +512,8 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                     tell $ singleton $ IMov (Loc loc) (Reg RAX)
                 VInt int -> tell $ singleton $ IMov (Const int) (Reg RAX)
                 VBool b -> tell $ singleton $ IMov (Const (if b then 1 else 0)) (Reg RAX)
-                VString str ->do
-                    modify $ (liftStrings (str:)) . (liftNStrings (+1))
-                    n <- gets n_strings
+                VString str -> do
+                    n <- allocString str
                     tell $ singleton $ IMov (StrRef n) (Reg RAX)
                 VStrRef v -> compileQuadruple (QRet (Var v))
             endl <- asks end_label
@@ -485,21 +523,55 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
             tell $ singleton $ IJmpS endl
         _ -> error "wrong quadruple"
 
+compareStrings :: Argument -> Argument -> Result Instruction ()
+compareStrings arg1 arg2 = do
+    locs <- gets locations
+    backupRegister locs RDI
+    backupRegister locs RSI
+    backupRegister locs RCX
+    backupRegister locs RAX
+    tell $ fromList [IMov arg1 (Reg RDI), IMov arg2 (Reg RSI), IStrCmp]
+    restoreRegister locs RAX
+    restoreRegister locs RCX
+    restoreRegister locs RSI
+    restoreRegister locs RDI
+    where
+    backupRegister :: [Location] -> Register -> Result Instruction ()
+    backupRegister locs reg = do
+        if not (elem (Reg reg) locs) then
+            tell $ singleton $ IPush (Loc (Reg reg))
+        else return ()
+    restoreRegister :: [Location] -> Register -> Result Instruction ()
+    restoreRegister locs reg = do
+        if not (elem (Reg reg) locs) then
+            tell $ singleton $ IPop (Reg reg)
+        else return ()
+
 swapToRegister :: [Quadruple] -> Color -> Result Instruction Location
 swapToRegister quads c = do
     cmap <- asks coloring
     sloc <- getLocationErr c
-    (_, regc, treg) <- gets $ maximum .
-        (map (\(reg,col) -> (nextUse cmap col quads, col, reg))) . Map.assocs . register_colors
-    let tloc = Reg treg
-    tell $ fromList [IXor (Loc sloc) tloc
-                    ,IXor (Loc tloc) sloc
-                    ,IXor (Loc sloc) tloc]
-    modify $ (liftLEnv (Map.insert c tloc)) .
-            (liftLEnv (Map.insert regc sloc)) .
-            (liftRegisterColors (Map.insert treg c))
-    return tloc
-
+    locs <- gets locations
+    case locs of
+        [] -> error "No free location"
+        (l@(Reg treg):ls) -> do
+            modify $ (liftLocations (\_ -> ls)) .
+                    (liftLEnv (Map.insert c l)) .
+                    (liftRegisterColors (Map.insert treg c))
+            tell (singleton (IMov (Loc sloc) l))
+            return l
+        _ -> do
+            (_, regc, treg) <- gets $ maximum .
+                (map (\(reg,col) ->
+                    (nextUse cmap col quads, col, reg))) . Map.assocs . register_colors
+            let tloc = Reg treg
+            tell $ fromList [IXor (Loc sloc) tloc
+                            ,IXor (Loc tloc) sloc
+                            ,IXor (Loc sloc) tloc]
+            modify $ (liftLEnv (Map.insert c tloc)) .
+                    (liftLEnv (Map.insert regc sloc)) .
+                    (liftRegisterColors (Map.insert treg c))
+            return tloc
 
 nextUse :: Coloring -> Color -> [Quadruple] -> Int
 nextUse cmap col q = nextUseAcum cmap col q 1
