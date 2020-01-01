@@ -29,6 +29,9 @@ newtype Variable = Variable Int
 newtype Label = Label Int
     deriving (Eq, Ord)
 
+instance Show Label where
+    show (Label l) = "_l" ++ show l
+
 data Val = Var Variable | VInt Integer | VBool Bool | VString String | VStrRef Variable
     deriving (Eq, Show)
 
@@ -82,14 +85,14 @@ incVars = Var <$> Variable <$> (modify (liftVars (+1)) >> gets vars)
 incLabels :: Result Label
 incLabels = Label <$> (modify (liftLabels (+1)) >> gets labels)
 
-convertTopDef :: Int -> TopDef -> ([Quadruple], Coloring, Int)
+convertTopDef :: Int -> TopDef -> ([Quadruple], Coloring)
 convertTopDef fst_label (FnDef t _ args block) =
     let (argEnv, nargs) = foldl (\(acc, n) (Arg _ arg) ->
             (Map.insert arg (Var (Variable n)) acc, n + 1)) (Map.empty, 0) args in
     let res = toList $ execWriter (
             evalStateT (convertBlock block) (QState argEnv nargs fst_label Nothing)) in
     let res2 = if t == Void && (last res /= QRetV) then res ++ [QRetV] else res in
-    let (coloring, ncolors) = (graphColoring . collisionGraph) res in
+    let (coloring, _) = (graphColoring . (collisionGraph nargs)) res in
     let res3 = filter filterNotUsedVars res2 where
         filterNotUsedVars q = case q of
             QAss (Var v) _ -> Map.member v coloring
@@ -97,7 +100,7 @@ convertTopDef fst_label (FnDef t _ args block) =
             QNeg (Var v) _ -> Map.member v coloring
             QNot (Var v) _ -> Map.member v coloring
             _ -> True in
-    (res3, coloring, ncolors)
+    (res3, coloring)
 
 --convertArg :: Arg -> Result ()
 --compileArg x = case x of
@@ -364,10 +367,13 @@ removeDups :: Ord a => [a] -> [a]
 removeDups l = snd $ foldl f (Set.empty, []) l where
     f (s, a) v = if Set.member v s then (s, a) else (Set.insert v s, v:a)
 
-collisionGraph :: [Quadruple] -> ListGraph
-collisionGraph quads =
+collisionGraph :: Int -> [Quadruple] -> ListGraph
+collisionGraph n_args quads =
     let variables = removeDups $ foldl (\acc q -> (getVariables q) ++ acc) [] quads in
-    foldl foldVars [] variables where
+    let var_no_args = filter (\(Variable n) -> n >= n_args) variables in
+    let arg_cluque = map (\n -> ((Variable n), map Variable (filter (/= n) [0..n_args - 1])))
+            [0 .. n_args - 1] in
+    foldl foldVars arg_cluque var_no_args where
         foldVars acc v =  (v, (removeDups $ foldl foldQuads [] quads)) : acc where
             foldQuads a q = if elem v qv then (filter (/= v) qv) ++ a else a where
                 qv = getVariables q
