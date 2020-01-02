@@ -6,22 +6,22 @@
 .global readInt
 .global readString
 
-#TODO inline
-#printStringLen(rsi -> string, rdx -> len)
-_printStringLen:
-	mov $1, %rax	#write
-	mov $1, %rdi	#stdout
-	syscall
-	ret
-
 printString:
     pushq %rdx
     pushq %rsi
     pushq %rdi
     movq 32(%rsp), %rax
-    movl (%rax), %edx
-    leaq 4(%rax), %rsi
-    call _printStringLen
+    movl (%rax), %edx   #len
+    leaq 4(%rax), %rsi  #string
+    mov $1, %rax	    #write
+	mov $1, %rdi	    #stdout
+	syscall
+    mov $1, %rax	    #write
+    movl $1, %edx       #one character
+    pushq $10           #newline
+    movq %rsp, %rsi
+    syscall
+    addq $8, %rsp
     popq %rdi
     popq %rsi
     popq %rdx
@@ -53,10 +53,12 @@ _printInt_loop:
 _printInt_chkcond:
     testl %edi, %edi
 	jnz _printInt_loop
-    leaq -8(%rbp), %rsi
+    leaq -8(%rbp), %rsi     #string
     leaq -7(%rbp), %rdx
-    subq %rsp, %rdx
-	call _printStringLen
+    subq %rsp, %rdx         #length
+    mov $1, %rax	        #write
+	mov $1, %rdi	        #stdout
+	syscall
 	movq %rbp, %rsp
     popq %rbp
     popq %rsi
@@ -70,7 +72,7 @@ _serror:
     .ascii "runtime error\12"
 
 error:
-    pushq _serror
+    pushq $_serror
     call printString
     movl $60, %eax      #exit
     movl $1, %edi       #code

@@ -4,6 +4,8 @@ module Main where
 import System.IO
 import System.Environment ( getArgs {-, getProgName -})
 import System.Exit ( exitFailure, exitSuccess )
+import System.FilePath
+import System.Process
 import Control.Monad (when)
 --import Control.Monad.Trans.Reader
 --import Control.Monad.State.Lazy
@@ -27,9 +29,15 @@ putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
 runFile :: Verbosity -> ParseFun Program -> FilePath -> IO ()
-runFile v p f = putStrV v f >> readFile f >>= run v p
+runFile v p f = putStrV v f >> readFile f >>= run v p >>= (writeFile outf) >>
+    (callCommand $ "gcc -c " ++ outf ++ " -o " ++ objf) >>
+    (callCommand $ "gcc -no-pie -nostartfiles -lc -o " ++ exef ++ " lib/runtime.o " ++ objf)
+    where
+    outf = dropExtension f ++ ".s"
+    objf = dropExtension f ++ ".o"
+    exef = dropExtension f
 
-run :: Verbosity -> ParseFun Program -> String -> IO ()
+run :: Verbosity -> ParseFun Program -> String -> IO String
 run v p s = let ts = myLexer s in case p ts of
     Bad err -> do
         hPutStrLn stderr "ERROR"
@@ -41,8 +49,7 @@ run v p s = let ts = myLexer s in case p ts of
     Ok program -> case runCheckProgram program of
         Right types -> do
             hPutStrLn stderr "OK"
-            putStrLn $ compileProgram types program
-            exitSuccess
+            return $ compileProgram types program
         Left exc -> hPutStrLn stderr "ERROR" >> putStrLn "Semantic check failed:" >> putStrLn (show exc) >> exitFailure
 
 showTree :: (Show a, Print a) => Int -> a -> IO ()
@@ -67,7 +74,7 @@ main = do
     args <- getArgs
     case args of
         ["--help"] -> usage
-        [] -> getContents >>= run 0 pProgram
-        "-v":fs -> mapM_ (runFile 2 pProgram) fs
-        fs -> mapM_ (runFile 0 pProgram) fs
+        [] -> getContents >>= run 0 pProgram >>= putStrLn >> exitSuccess
+        "-v":fs -> mapM_ (runFile 2 pProgram) fs >> exitSuccess
+        fs -> mapM_ (runFile 0 pProgram) fs >> exitSuccess
 

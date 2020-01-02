@@ -108,7 +108,7 @@ parseLocation arg_off loc = case loc of
 parseArgument :: Int -> Argument -> String
 parseArgument arg_off arg = case arg of
     Loc loc -> parseLocation arg_off loc
-    StrRef n -> "_s" ++ show n
+    StrRef n -> "$_s" ++ show n
     Const n -> "$" ++ show n
 
 parseInstr :: Int -> Instruction -> String

@@ -29,6 +29,7 @@ dependencies:
 - directory
 - dlist
 - sort
+- process
 
 library:
   source-dirs: src
