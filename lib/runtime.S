@@ -1,5 +1,11 @@
 .section .text
 
+.global printString
+.global printInt
+.global error
+.global readInt
+.global readString
+
 #TODO inline
 #printStringLen(rsi -> string, rdx -> len)
 _printStringLen:
@@ -91,7 +97,7 @@ _readInt_chkcond:
     jg _readInt_loop_end
     leaq -24(%rbx, %rbx, 4), %rbx
     shlq $1, %rbx
-    addq ($rsp), %rbx
+    addq (%rsp), %rbx
     jmp _readInt_loop
 _readInt_loop_end:
     movq %rbx, %rax

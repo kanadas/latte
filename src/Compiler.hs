@@ -10,6 +10,8 @@ import Quadruples
 import AbsLatte
 import Frontend(TEnv)
 
+import Debug.Trace
+
 data Register = RAX | RBX | RCX | RDX | RSI | RDI | R8 | R9 | R10 | R11 | R12 |R13 | R14 | R15
         | RSP | RBP
     deriving (Eq, Ord)
@@ -235,7 +237,7 @@ usedRegisters locs = filter (\reg -> not $ elem (Reg reg) locs) saved_registers
 
 stringDef :: Int -> String -> String
 stringDef n str = "_s" ++ show n ++ ": .long " ++ show (length str) ++
-    " .ascii \"" ++ str ++ "\""
+    "\n.ascii \"" ++ str ++ "\""
 
 compileProgram :: TEnv -> Program -> String
 compileProgram types (Program topdefs) =
@@ -252,14 +254,17 @@ compileProgram types (Program topdefs) =
                   ([], 1 :: Int) (strings fin_state)) in
     unlines $ [".text"] ++
         str_defs ++
-        [".global _main",
-        "_main:",
-        "call main"] ++
+        [".global _start",
+        "_start:",
+        "call main",
+        "movl $60, %eax",
+        "movq %rax, %rdi",
+        "syscall"] ++
         toList instrs
 
 compileTopDef :: TEnv -> TopDef -> State CState (DList String)
-compileTopDef types x = case x of
-  FnDef _ (Ident fname) args _ -> do
+compileTopDef _ (FnDef _ x _ _) | trace ("compileTopDef: " ++ show x) False = undefined
+compileTopDef types x@(FnDef _ (Ident fname) args _) = do
     let endl = "_end_" ++ fname
     nxt_label <- gets labels
     let (quadruples, color) = convertTopDef nxt_label types x
@@ -285,6 +290,7 @@ compileTopDef types x = case x of
 compileQuadruples :: [Quadruple] -> Result Instruction ()
 compileQuadruples [] = return ()
 compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quads where
+    compileQuadruple x | trace ("compileQuadruple " ++ show x) False = undefined
     compileQuadruple x = case x of
         QAss (Var var) val -> do
             tcol <- getColor var
@@ -477,8 +483,7 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
             tell $ singleton $ ILabel label
         QCall (Var var) (Ident fun) args -> do
             locs <- gets locations
-            tcol <- getColor var
-            tloc <- assignLocation tcol
+            tloc <- getColor var >>= assignLocation
             if not (elem (Reg RAX) locs) && tloc /= Reg RAX then
                 tell $ singleton $ IPush (Loc (Reg RAX))
             else return ()
@@ -493,18 +498,12 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
             if not (elem (Reg RAX) locs) && tloc /= Reg RAX then
                 tell $ singleton $ IPop (Reg RAX)
             else return ()
-            where
-            compilePush val = do
-                case val of
-                    Var v -> do
-                        sloc <- getColor v >>= getLocationErr
-                        tell $ singleton $ IPush (Loc sloc)
-                    VInt int -> tell $ singleton $ IPush (Const int)
-                    VBool b -> tell $ singleton $ IPush (Const (if b then 1 else 0))
-                    VStrRef v -> compilePush (Var v)
-                    VString str -> do
-                        n <- allocString str
-                        tell $ singleton $ IPush (StrRef n)
+        QCallV (Ident fun) args -> do
+            mapM_ compilePush (reverse args)
+            tell $ singleton $ ICall fun
+            if args /= [] then
+                tell $ singleton $ IAdd (Const (8 * (toInteger $ length args))) (Reg RSP)
+            else return ()
         QRet val -> do
             case val of
                 Var v -> do
@@ -522,6 +521,20 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
             endl <- asks end_label
             tell $ singleton $ IJmpS endl
         _ -> error "wrong quadruple"
+
+compilePush :: Val -> Result Instruction ()
+compilePush val = do
+    case val of
+        Var v -> do
+            sloc <- getColor v >>= getLocationErr
+            tell $ singleton $ IPush (Loc sloc)
+        VInt int -> tell $ singleton $ IPush (Const int)
+        VBool b -> tell $ singleton $ IPush (Const (if b then 1 else 0))
+        VStrRef v -> compilePush (Var v)
+        VString str -> do
+            n <- allocString str
+            tell $ singleton $ IPush (StrRef n)
+
 
 compareStrings :: Argument -> Argument -> Result Instruction ()
 compareStrings arg1 arg2 = do

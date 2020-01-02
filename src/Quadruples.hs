@@ -26,6 +26,8 @@ import Control.Monad.Writer
 import AbsLatte
 import Frontend(TEnv)
 
+import Debug.Trace
+
 newtype Variable = Variable Int
     deriving (Eq, Ord, Show)
 
@@ -62,9 +64,10 @@ data Quadruple
     | QJmp Label
     | QLabel Label
     | QCall Val Ident [Val]
+    | QCallV Ident [Val]
     | QRet Val
     | QRetV
-    deriving Eq
+    deriving (Eq, Show)
 
 type VEnv = Map.Map Ident Val
 data QState = QState {
@@ -94,6 +97,7 @@ incLabels :: Result Label
 incLabels = Label <$> (modify (liftLabels (+1)) >> gets labels)
 
 convertTopDef :: Int -> TEnv -> TopDef -> ([Quadruple], Coloring)
+convertTopDef _ _ (FnDef _ x _ _) | trace ("convertTopDef: " ++ show x) False = undefined
 convertTopDef fst_label types (FnDef t _ args block) =
     let (argEnv, nargs) = foldl (\(acc, n) (Arg _ arg) ->
             (Map.insert arg (Var (Variable n)) acc, n + 1)) (Map.empty, 0) args in
@@ -102,12 +106,13 @@ convertTopDef fst_label types (FnDef t _ args block) =
     let res2 = if t == Void && (last res /= QRetV) then res ++ [QRetV] else res in
     let (coloring, _) = (graphColoring . (collisionGraph nargs)) res in
     let res3 = filter filterNotUsedVars res2 where
-        filterNotUsedVars q = case q of
+        filterNotUsedVars q = case q of --TODO test it
             QAss (Var v) _ -> Map.member v coloring
             QOp (Var v) _ _ _ -> Map.member v coloring
             QNeg (Var v) _ -> Map.member v coloring
             QNot (Var v) _ -> Map.member v coloring
             _ -> True in
+    --let _ = trace (show res3) False in
     (res3, coloring)
 
 convertBlock :: Block -> Result ()
@@ -117,6 +122,7 @@ convertBlock (Block stmts) = do
     modify $ liftVEnv (\_ -> env)
 
 convertStmt :: Stmt -> Result ()
+convertStmt x | trace ("convertStmt: " ++ show x) False = undefined
 convertStmt x = case x of
     Empty -> return ()
     BStmt block -> convertBlock block
@@ -190,6 +196,7 @@ convertItem t x = case x of
 
 --Returns result variable of subexpression
 convertExpr :: Expr -> Result Val
+convertExpr x | trace ("convertExpr: " ++ show x) False = undefined
 convertExpr x = case x of
     EVar ident -> gets $ (Map.! ident).venv
     ELitInt int-> return $ VInt int
@@ -208,11 +215,17 @@ convertExpr x = case x of
     EApp ident exprs -> do
         args <- foldM (\acc expr -> (:acc) <$> convertExpr expr) [] (reverse exprs)
         ret_t <- (Map.! ident) <$> gets tenv
-        v <- if ret_t == Str then
-                VStrRef <$> Variable <$> (modify (liftVars (+1)) >> gets vars)
-            else incVars
-        tell $ singleton $ QCall v ident args
-        return v
+        case ret_t of
+            Fun Void _ ->
+                tell (singleton $ QCallV ident args) >> return (VInt 0)
+            Fun Str _ -> do
+                v <- VStrRef <$> Variable <$> (modify (liftVars (+1)) >> gets vars)
+                tell $ singleton $ QCall v ident args
+                return v
+            _ -> do
+                v <- incVars
+                tell $ singleton $ QCall v ident args
+                return v
     EString string -> return $ VString string
     Neg expr -> do
         v <- convertExpr expr
@@ -375,6 +388,7 @@ removeDups l = snd $ foldl f (Set.empty, []) l where
     f (s, a) v = if Set.member v s then (s, a) else (Set.insert v s, v:a)
 
 collisionGraph :: Int -> [Quadruple] -> ListGraph
+collisionGraph _ quads | trace ("quadruples: " ++ show quads) False = undefined
 collisionGraph n_args quads =
     let variables = removeDups $ foldl (\acc q -> (getVariables q) ++ acc) [] quads in
     let var_no_args = filter (\(Variable n) -> n >= n_args) variables in
@@ -386,15 +400,16 @@ collisionGraph n_args quads =
                 qv = getVariables q
 
 graphColoring :: ListGraph -> (Coloring, Int)
+graphColoring g | trace ("graph: " ++ show g) False = undefined
 graphColoring g =
     orderedGraphColoring (sortOn (\(_, l) -> length l) g)
 
 
 orderedGraphColoring :: ListGraph -> (Coloring, Int)
 orderedGraphColoring g = foldl foldGraph (Map.empty, 0) g where
+    foldGraph _ (v, l) | trace ("foldGraph: " ++ show (v,l)) False = undefined
     foldGraph (coloring, nc) (v, l) =
         (Map.insert v color coloring, if color < nc then nc else nc + 1) where
         color = mexSorted 0 (sort (map (coloring Map.!) (filter (`Map.member` coloring) l))) where
             mexSorted n (x:xs) = if x == n then mexSorted (n+1) xs else n
             mexSorted n [] = n
-
