@@ -5,6 +5,7 @@
 .global error
 .global readInt
 .global readString
+.global _concat
 
 printString:
     pushq %rdx
@@ -16,10 +17,10 @@ printString:
     mov $1, %rax	    #write
 	mov $1, %rdi	    #stdout
 	syscall
-    mov $1, %rax	    #write
+    movl $1, %eax	    #write
     movl $1, %edx       #one character
     pushq $10           #newline
-    movq %rsp, %rsi
+    movq %rsp, %rsi     #string
     syscall
     addq $8, %rsp
     popq %rdi
@@ -34,31 +35,42 @@ printInt:
     pushq %rsi
 	pushq %rbp
 	movq %rsp, %rbp
-    movq 48(%rbp), %rdi
-    subq $7, %rsp
+    movq 48(%rbp), %rax
+    movl $10, %r8d
+    subq $8, %rsp
+    cmpq $0, %rax
+    jge _printInt_chkcond
+    movq %rax, %r8
+    movb $45, (%rsp)        #minus sign
+    movq %rsp, %rsi         #string
+    movl $1, %edx           #length
+    movl $1, %eax           #write
+    movl $1, %edi           #stdout
+    syscall
+    movq %r8, %rax
+    negq %rax
+    movl $10, %r8d
     jmp _printInt_chkcond
 _printInt_loop:
-    movl $-858993459, %edx	#counting edi % 10
-	movl %edi, %eax
-	mull %edx
-	shrl $3, %edx			#edx = edi / 10
-	movl %edx, %r8d
-	movl $10, %eax
-	mull %edx
-	subl %edx, %edi
-	subq $1, %rsp
-	movb %dil, (%rsp)	    #[rsp + 1] <- edi % 10
+    xorq %rdx, %rdx
+    divq %r8
+	movb %dl, (%rsp)	    #[rsp + 1] <- rax % 10
 	addb $48, (%rsp)		#[rsp + 1] = [rsp - 1] + '0'
-	movl %r8d, %edi			#edi = edi / 10
+    subq $1, %rsp
 _printInt_chkcond:
-    testl %edi, %edi
+    testq %rax, %rax
 	jnz _printInt_loop
-    leaq -8(%rbp), %rsi     #string
-    leaq -7(%rbp), %rdx
+    leaq 1(%rsp), %rsi     #string
+    leaq -8(%rbp), %rdx
     subq %rsp, %rdx         #length
     mov $1, %rax	        #write
 	mov $1, %rdi	        #stdout
 	syscall
+    movl $1, %eax	    #write
+    movl $1, %edx       #one character
+    pushq $10           #newline
+    movq %rsp, %rsi     #string
+    syscall
 	movq %rbp, %rsp
     popq %rbp
     popq %rsi
@@ -82,11 +94,21 @@ readInt:
     pushq %rdi
     pushq %rdx
     pushq %rsi
+    pushq %r8
     pushq %rbx
+    xorq %rbx, %rbx
+    xorq %r8, %r8
     xorq %rdi, %rdi     #stdin
     movq $1, %rdx       #count
     pushq $0
     movq %rsp, %rsi     #buf
+    xorq %rax, %rax     #read
+    syscall
+    testl %eax, %eax
+    jz _readInt_loop_end
+    cmpb $45, (%rsp)
+    jne _readInt_chkcond
+    movl $1, %r8d
 _readInt_loop:
     xorq %rax, %rax     #read
     syscall
@@ -102,9 +124,14 @@ _readInt_chkcond:
     addq (%rsp), %rbx
     jmp _readInt_loop
 _readInt_loop_end:
+    testb %r8b, %r8b
+    jz _positive_result
+    negq %rbx
+_positive_result:
     movq %rbx, %rax
     addq $8, %rsp
     popq %rbx
+    popq %r8
     popq %rsi
     popq %rdx
     popq %rdi
@@ -122,7 +149,7 @@ _allocString:
     pushq %r11
     pushq %rbp
     movq %rsp, %rbp
-    andq $16, %rsp
+    andq $-16, %rsp
     addq $4, %rdi   #4 bytes for size
     call malloc
     movq %rbp, %rsp
@@ -142,11 +169,12 @@ readString:
     pushq %rdx
     pushq %rsi
     pushq %rcx
+    pushq %r8
     pushq %rbp
     movq %rsp, %rbp
     xorq %rdi, %rdi     #stdin
     movq $1, %rdx       #count
-    addq $7, %rsp
+    subq $7, %rsp
 _readString_loop:
     dec %rsp
     movq %rsp, %rsi     #buf
@@ -158,20 +186,31 @@ _readString_chkcond:
     cmpb $10, (%rsp)
     jne _readString_loop
 _readString_end_loop:
-    leaq 7(%rbp), %rdi
-    subq %rsp, %rdi
+    leaq -8(%rbp), %rdi
+    subq %rsp, %rdi     #length
     call _allocString
     movl %edi, (%rax)   #set length
-    movl %edi, %ecx     #copy length
-    leaq 8(%rbp), %rsi  #copy from
-    leaq 4(%rax), %rdi  #copy to
-    rep movsb
+    leaq -8(%rbp), %rsi #copy from
+    leaq 4(%rax), %r8   #copy to
+    xorl %ecx, %ecx
+    jmp _cpyString_chkcond
+_cpyString_body:
+    movb (%rsi), %cl
+    movb %cl, (%r8)
+    decq %rsi
+    incq %r8
+    decq %rdi
+_cpyString_chkcond:
+    testq %rdi, %rdi
+    jne _cpyString_body
     mov %rbp, %rsp
     popq %rbp
+    popq %r8
     popq %rcx
     popq %rsi
     popq %rdx
     popq %rdi
+    ret
 
 _concat:
     pushq %rbx

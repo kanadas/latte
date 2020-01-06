@@ -30,6 +30,7 @@ dependencies:
 - dlist
 - sort
 - process
+- pretty-simple #for debug only
 
 library:
   source-dirs: src
