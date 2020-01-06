@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-} --for ifdef
 module Compiler where
 
 import qualified Data.Map.Strict as Map
@@ -10,8 +11,18 @@ import Quadruples
 import AbsLatte
 import Frontend(TEnv)
 
-import Debug.Trace
-import Debug.Pretty.Simple
+import qualified Debug.Trace
+import qualified Debug.Pretty.Simple
+
+trace :: String -> a -> a
+pTrace :: String -> a -> a
+#ifdef DEBUG
+trace = Debug.Trace.trace
+pTrace = Debug.Pretty.Simple.pTrace
+#else
+trace _ b = b
+pTrace _ b = b
+#endif
 
 data Register = RAX | RBX | RCX | RDX | RSI | RDI | R8 | R9 | R10 | R11 | R12 |R13 | R14 | R15
         | RSP | RBP
@@ -140,12 +151,12 @@ parseInstr ao instr = case instr of
     IXor arg loc -> "xorq " ++ parseArgument ao arg ++ ", " ++ parseLocation ao loc
     INot loc -> "notq " ++ parseLocation ao loc
     ICall str -> "call " ++ str
-    ISetl reg -> "setl " ++ showRegB reg
-    ISetle reg -> "setle " ++ showRegB reg
-    ISetg reg -> "letg " ++ showRegB reg
-    ISetge reg -> "setge " ++ showRegB reg
-    ISete reg -> "sete " ++ showRegB reg
-    ISetne reg -> "setne " ++ showRegB reg
+    ISetl reg -> "setl " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
+    ISetle reg -> "setle " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
+    ISetg reg -> "setg " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
+    ISetge reg -> "setge " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
+    ISete reg -> "sete " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
+    ISetne reg -> "setne " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
     INeg loc -> "negq " ++ parseLocation ao loc
     ICQO -> "cqo"
     IXchg arg1 arg2 -> "xchgq " ++ parseArgument ao arg1 ++ ", " ++ parseArgument ao arg2
@@ -255,8 +266,8 @@ compileProgram types (Program topdefs) =
         [".global _start",
         "_start:",
         "call main",
-        "movl $60, %eax",
         "movq %rax, %rdi",
+        "movl $60, %eax",
         "syscall"] ++
         toList instrs
 
@@ -358,10 +369,10 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                     OAdd -> tell $ singleton $ IAdd arg (Reg tloc)
                     OSub -> tell $ singleton $ ISub arg (Reg tloc)
                     OMul -> tell $ singleton $ IMul arg (Reg tloc)
-                    OLTH -> tell $ fromList [ICmp arg (Loc (Reg tloc)), ISetl tloc]
-                    OLE  -> tell $ fromList [ICmp arg (Loc (Reg tloc)), ISetle tloc]
-                    OGTH -> tell $ fromList [ICmp arg (Loc (Reg tloc)), ISetg tloc]
-                    OGE  -> tell $ fromList [ICmp arg (Loc (Reg tloc)), ISetge tloc]
+                    OLTH -> tell $ fromList [ICmp (Loc (Reg tloc)) arg , ISetl tloc]
+                    OLE  -> tell $ fromList [ICmp (Loc (Reg tloc)) arg , ISetle tloc]
+                    OGTH -> tell $ fromList [ICmp (Loc (Reg tloc)) arg , ISetg tloc]
+                    OGE  -> tell $ fromList [ICmp (Loc (Reg tloc)) arg , ISetge tloc]
                     OEQU -> do
                         case val of
                             VString _ -> compareStrings (Loc (Reg tloc)) arg

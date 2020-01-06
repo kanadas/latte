@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-} --for ifdef
 module Quadruples(
     Variable(..),
     Label(..),
@@ -31,8 +32,18 @@ import Control.Monad.Writer
 import AbsLatte
 import Frontend(TEnv)
 
-import Debug.Trace
-import Debug.Pretty.Simple
+import qualified Debug.Trace
+import qualified Debug.Pretty.Simple
+
+trace :: String -> a -> a
+pTrace :: String -> a -> a
+#ifdef DEBUG
+trace = Debug.Trace.trace
+pTrace = Debug.Pretty.Simple.pTrace
+#else
+trace _ b = b
+pTrace _ b = b
+#endif
 
 newtype Variable = Variable Int
     deriving (Eq, Ord, Show)
@@ -215,19 +226,34 @@ convertItem t x = case x of
 convertExpr :: Expr -> Result Val
 convertExpr x | trace ("convertExpr: " ++ show x) False = undefined
 convertExpr x = case x of
-    EVar ident -> gets $ (Map.! ident).venv
+    EVar ident -> do
+        v <- gets $ (Map.! ident).venv
+        in_if <- gets if_labels
+        case in_if of
+            Nothing -> return ()
+            Just (ltrue, lfalse) ->
+                tell $ fromList [QIf v OEQU (VBool True) ltrue
+                                , QJmp lfalse]
+        return v
     ELitInt int-> return $ VInt int
     ELitTrue -> return $ VBool True
     ELitFalse -> return $ VBool False
     EApp ident exprs -> do
         args <- foldM (\acc expr -> (:acc) <$> convertExpr expr) [] (reverse exprs)
         ret_t <- (Map.! ident) <$> gets tenv
+        in_if <- gets if_labels
+        modify $ liftIfLabels (\_ -> Nothing)
         case ret_t of
             Fun Void _ ->
                 tell (singleton $ QCallV ident args) >> return (VInt 0)
             Fun t _ -> do
                 v <- incVars (t == Str)
                 tell $ singleton $ QCall v ident args
+                case in_if of
+                    Nothing -> return ()
+                    Just (ltrue, lfalse) ->
+                        tell $ fromList [QIf v OEQU (VBool True) ltrue,
+                                        QJmp lfalse]
                 return v
             _ ->  error $ "not a function type: " ++ show ret_t
     EString string -> return $ VString string
@@ -240,6 +266,7 @@ convertExpr x = case x of
                 tell $ singleton $ QNeg nv v
                 return nv
     Not expr -> do
+        modify $ liftIfLabels (fmap (\(ltrue, lfalse) -> (lfalse, ltrue)))
         v <- convertExpr expr
         case v of
             VBool b -> return $ VBool (not b)
@@ -254,6 +281,7 @@ convertExpr x = case x of
         case in_if of
             Nothing -> convertOp expr1 (convertRelOp relop) expr2
             Just (ltrue, lfalse) -> do
+                modify $ liftIfLabels (\_ -> Nothing)
                 v1 <- convertExpr expr1
                 v2 <- convertExpr expr2
                 case getConstResult v1 (convertRelOp relop) v2 of

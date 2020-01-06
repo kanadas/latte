@@ -1,3 +1,5 @@
 .stack-work/
 latte.cabal
+test/notworking/
+test/lattests/
 *~

@@ -11,7 +11,9 @@ printString:
     pushq %rdx
     pushq %rsi
     pushq %rdi
-    movq 32(%rsp), %rax
+    pushq %rcx          #syscall unsave
+    pushq %r11          #syscall unsave
+    movq 48(%rsp), %rax
     movl (%rax), %edx   #len
     leaq 4(%rax), %rsi  #string
     mov $1, %rax	    #write
@@ -23,6 +25,8 @@ printString:
     movq %rsp, %rsi     #string
     syscall
     addq $8, %rsp
+    popq %r11
+    popq %rcx
     popq %rdi
     popq %rsi
     popq %rdx
@@ -33,13 +37,15 @@ printInt:
     pushq %rdx
     pushq %r8
     pushq %rsi
+    pushq %rcx          #syscall unsave
+    pushq %r11          #syscall unsave
 	pushq %rbp
 	movq %rsp, %rbp
-    movq 48(%rbp), %rax
+    movq 64(%rbp), %rax
     movl $10, %r8d
     subq $8, %rsp
     cmpq $0, %rax
-    jge _printInt_chkcond
+    jge _printInt_loop
     movq %rax, %r8
     movb $45, (%rsp)        #minus sign
     movq %rsp, %rsi         #string
@@ -50,7 +56,6 @@ printInt:
     movq %r8, %rax
     negq %rax
     movl $10, %r8d
-    jmp _printInt_chkcond
 _printInt_loop:
     xorq %rdx, %rdx
     divq %r8
@@ -73,6 +78,8 @@ _printInt_chkcond:
     syscall
 	movq %rbp, %rsp
     popq %rbp
+    popq %r11
+    popq %rcx
     popq %rsi
     popq %r8
     popq %rdx
@@ -96,6 +103,8 @@ readInt:
     pushq %rsi
     pushq %r8
     pushq %rbx
+    pushq %rcx          #syscall unsave
+    pushq %r11          #syscall unsave
     xorq %rbx, %rbx
     xorq %r8, %r8
     xorq %rdi, %rdi     #stdin
@@ -130,6 +139,8 @@ _readInt_loop_end:
 _positive_result:
     movq %rbx, %rax
     addq $8, %rsp
+    popq %r11
+    popq %rcx
     popq %rbx
     popq %r8
     popq %rsi
@@ -170,6 +181,7 @@ readString:
     pushq %rsi
     pushq %rcx
     pushq %r8
+    pushq %r11          #syscall unsave
     pushq %rbp
     movq %rsp, %rbp
     xorq %rdi, %rdi     #stdin
@@ -205,6 +217,7 @@ _cpyString_chkcond:
     jne _cpyString_body
     mov %rbp, %rsp
     popq %rbp
+    popq %r11
     popq %r8
     popq %rcx
     popq %rsi

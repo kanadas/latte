@@ -56,3 +56,13 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - latte
+
+flags:
+  debug:
+    description: Enable debug
+    manual: True
+    default: False
+
+when:
+  - condition: flag(debug)
+    cpp-options:  -DDEBUG
