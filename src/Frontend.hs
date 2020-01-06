@@ -30,6 +30,12 @@ data Exception =
     | ENotAFun Ident Type Trace
     | ETypeMismatch Expr Type Type Trace
     | EDoubleDecl Ident Trace
+    | EVoidVar Item Trace
+    | ETooBigConstant Integer Trace
+    | EVoidArg TopDef
+    | EWrongMain TopDef
+    | EVoidReturn Expr Trace
+    | ENoMain
     | ENotImplemented
 
 instance Show Exception where
@@ -47,6 +53,13 @@ instance Show Exception where
             "\nExpected " ++ show t2 ++ ", got " ++ show t1 ++ " in: \n" ++ show trac
         EDoubleDecl ident trac -> "Double declaration of symbol " ++ show ident ++
             " in \n" ++ show trac
+        EVoidVar (NoInit ident) trac -> "Variable with void type: " ++ show ident ++ " in \n" ++ show trac
+        EVoidVar (Init ident _) trac -> "Variable with void type: " ++ show ident ++ " in \n" ++ show trac
+        ETooBigConstant n trac -> "Too big constant: " ++ show n ++ " in \n" ++ show trac
+        EVoidArg topdef -> "Function with void argument: " ++ (printFunHead topdef)
+        EWrongMain topdef -> "Wrond main definition: " ++ (printFunHead topdef)
+        EVoidReturn expr trac -> "Returning value in void function: " ++ printTree expr ++ " in \n" ++ show trac
+        ENoMain -> "No main function"
         ENotImplemented -> "Not implemented functionality"
 
 printFunHead :: TopDef -> String
@@ -61,7 +74,8 @@ instance Show Trace where
         where
         traceExpr (Just e) = "\n  Expression:\n" ++ printTree e
         traceExpr Nothing = ""
-        traceStmts (stmt:_) = "\n  Statement:\n" ++ printTree stmt
+        traceStmts [stmt] = "\n  Statement:\n" ++ printTree stmt
+        traceStmts (stmt:stmt2:_) = "\n  Statements:\n" ++ printTree stmt2 ++ printTree stmt
         traceStmts [] = ""
 
 type TEnv = Map.Map Ident Type
@@ -91,8 +105,14 @@ checkProgram (Program topdefs) = mapM_ checkTopDef topdefs
 
 checkTopDef :: TopDef -> Result ()
 checkTopDef x = case x of
-    FnDef t _ args block -> do
+    FnDef t (Ident fname) args block -> do
         trac <- asks trace
+        if (filter (\(Arg t _) -> t == Void) args) /= [] then
+            throwError $ EVoidArg x
+        else return ()
+        if fname == "main" && (args /= [] || t /= Int) then
+            throwError $ EWrongMain x
+        else return ()
         put (argsMap args)
         rb <- local (\e -> e{trace = trac{tracFun = x}}) (checkBlock block)
         if rb || t == Void then return ()
@@ -113,7 +133,10 @@ checkStmt x = case x of
         res <- local ((\e -> e{tenv = env}).(appendTraceStmt x)) (checkBlock block)
         put stat
         return res
-    Decl t items -> mapM_ (checkItem x t) items >> return False
+    Decl t items -> if t == Void then do
+                trac <- asks trace
+                throwError $ EVoidVar (head items) (insideStmtTrace x trac)
+            else mapM_ (checkItem x t) items >> return False
     Ass ident expr -> do
         te <- localCheckExpr x expr
         env <- getCombEnv
@@ -140,8 +163,9 @@ checkStmt x = case x of
         te <- localCheckExpr x expr
         trac <- asks trace
         case tracFun trac of
-            FnDef t _ _ _ -> if t == te then return True
-                else throwError $ ETypeMismatch expr te t (insideStmtTrace x trac)
+            FnDef t _ _ _ | t == Void -> throwError $ EVoidReturn expr (insideStmtTrace x trac)
+            FnDef t _ _ _ | t == te -> return True
+            FnDef t _ _ _ -> throwError $ ETypeMismatch expr te t (insideStmtTrace x trac)
     VRet -> do
         trac <- asks trace
         case tracFun trac of
@@ -215,7 +239,10 @@ checkExpr x = case x of
         case env Map.!? ident of
             Just t -> return t
             Nothing -> throwError $ EUnknownVar ident trac
-    ELitInt _ -> return Int
+    ELitInt n -> if abs n >= 2^(63 :: Integer) then do
+            trac <- asks trace
+            throwError $ ETooBigConstant n trac
+        else return Int
     ELitTrue -> return Bool
     ELitFalse -> return Bool
     EApp ident exprs -> do
@@ -289,8 +316,11 @@ argsTypes td args = reverse <$> fst <$> foldM (\(acc, set) (Arg t ident) ->
     else return (t : acc, Set.insert ident set)) ([], Set.empty) args
 
 getSymbols :: Program -> TEnv -> Either Exception TEnv
-getSymbols (Program topdefs) initialSym =
-    foldM addf initialSym topdefs
+getSymbols (Program topdefs) initialSym =  do
+    res <- foldM addf initialSym topdefs
+    if not (Map.member (Ident "main") res) then
+        throwError ENoMain
+    else return res
     where addf env topdef@(FnDef t ident args _) =
             if Map.member ident env then throwError (ERepeatedFun topdef)
             else do

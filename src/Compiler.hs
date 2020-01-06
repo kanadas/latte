@@ -111,6 +111,7 @@ data Instruction
     | ISete Register
     | ISetne Register
     | INeg Location
+    | INotBool Register
     | ICQO
     | IStrCmp
     | IXchg Argument Argument
@@ -158,6 +159,7 @@ parseInstr ao instr = case instr of
     ISete reg -> "sete " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
     ISetne reg -> "setne " ++ showRegB reg ++ "\n" ++ "andq $1, " ++ show reg
     INeg loc -> "negq " ++ parseLocation ao loc
+    INotBool reg -> "testb " ++ showRegB reg ++ ", " ++ showRegB reg ++ "\nsetz " ++ showRegB reg
     ICQO -> "cqo"
     IXchg arg1 arg2 -> "xchgq " ++ parseArgument ao arg1 ++ ", " ++ parseArgument ao arg2
     IStrCmp -> unlines ["movl (%rdi), %ecx",
@@ -238,6 +240,7 @@ escapeChar :: Char -> String
 escapeChar c = case c of
     '\\' -> "\\\\"
     '\"' -> "\\\""
+    '\n' -> "\\n"
     _ -> [c]
 
 escapeString :: String -> String
@@ -465,7 +468,7 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                     if sloc /= tloc then
                         tell $ singleton $ IMov (Loc (Reg sloc)) (Reg tloc)
                     else return ()
-                    tell $ singleton $ INot (Reg tloc)
+                    tell $ singleton $ INotBool tloc
                 VBool b -> tell $ singleton $ IMov (Const (if b then 0 else 1)) (Reg tloc)
                 _ -> error $ "cannot not " ++ show val
         QIf val1 op val2 label -> do
@@ -538,10 +541,15 @@ compileQuadruples (quad:quads) = compileQuadruple quad >> compileQuadruples quad
                     tell $ singleton $ IMov (StrRef n) (Reg RAX)
                 VStrRef v -> compileQuadruple (QRet (Var v))
             endl <- asks end_label
-            tell $ singleton $ IJmpS endl
+            if quads /= [] then
+                tell $ singleton $ IJmpS endl
+            else return ()
         QRetV -> do
+            tell $ singleton $ IXor (Loc (Reg RAX)) (Reg RAX)
             endl <- asks end_label
-            tell $ singleton $ IJmpS endl
+            if quads /= [] then
+                tell $ singleton $ IJmpS endl
+            else return ()
         _ -> error "wrong quadruple"
         where
         assignLocation :: Variable -> Color -> Result Instruction Register

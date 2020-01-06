@@ -125,23 +125,51 @@ convertTopDef fst_label types (FnDef _ _ args block) =
             QRet _ -> res --TODO remove unreachable blocks
             QRetV  -> res
             _ -> res ++ [QRetV] in
+    let usedvars = foldl (\s q -> Set.union s (Set.fromList (getUsedVariables q)))
+            Set.empty res2 in
+    let res3 = filter (filterNotUsedVars usedvars) res2 in
+    let res4 = removeObsJmps [] res3 where
+        removeObsJmps acc [] = reverse acc
+        removeObsJmps acc [q] = reverse (q:acc)
+        removeObsJmps acc (q1:q2:qs) = case q2 of
+            QLabel l2 -> case q1 of
+                QIf _ _ _ l1 | l1 == l2 -> removeObsJmps acc (q2:qs)
+                QJmp l1 | l1 == l2 -> removeObsJmps acc (q2:qs)
+                QLabel l1 ->
+                    let mlab quad = case quad of
+                            QIf a b c l | l == l1 -> QIf a b c l2
+                            QJmp l | l == l1 -> QJmp l2
+                            _ -> quad in
+                    removeObsJmps (map mlab acc) (map mlab (q2:qs))
+                _ -> removeObsJmps (q1:acc) (q2:qs)
+            _ -> removeObsJmps (q1:acc) (q2:qs) in
+    let usedlabels = foldl addUsedLabs Set.empty res4 where
+        addUsedLabs acc q = case q of
+            QIf _ _ _ l -> Set.insert l acc
+            QJmp l -> Set.insert l acc
+            _ -> acc in
+    let res5 = filter filterNotUsedLabels res4 where
+        filterNotUsedLabels q = case q of
+            QLabel l -> Set.member l usedlabels
+            _ -> True in
 
-    let trace_res = trace ("Quadruples:\n" ++ unlines (map show res2)) res2 in
+    let trace_res = trace ("Quadruples:\n" ++ unlines (map show res5)) res5 in
 
     let ssaGraph = toSSA nargs (computeFlow trace_res) in
-    --TODO optimizations
     let (coloring, ncolors) = graphColoring (collisionGraph ssaGraph) in
-    let res3 = foldr (\(_, node) acc -> (code node) ++ acc)
+    let res6 = foldr (\(_, node) acc -> (code node) ++ acc)
             [] (IntMap.assocs (graph_nodes ssaGraph)) in
-    --let res3 = filter filterNotUsedVars res2 where
-    --    filterNotUsedVars q = case q of --TODO test it
-    --        QAss (Var v) _ -> Map.member v coloring
-    --        QOp (Var v) _ _ _ -> Map.member v coloring
-    --        QNeg (Var v) _ -> Map.member v coloring
-    --        QNot (Var v) _ -> Map.member v coloring
-    --        _ -> True in
-    --let _ = trace (show res3) False in
-    (res3, coloring, ncolors)
+    let usedvars2 = foldl (\s q -> Set.union s (Set.fromList (getUsedVariables q)))
+            Set.empty res6 in
+    let res7 = filter (filterNotUsedVars usedvars2) res6 in
+    (res7, coloring, ncolors)
+    where
+    filterNotUsedVars usedvars q = case q of
+        QAss (Var v) _ -> Set.member v usedvars
+        QOp (Var v) _ _ _ -> Set.member v usedvars
+        QNeg (Var v) _ -> Set.member v usedvars
+        QNot (Var v) _ -> Set.member v usedvars
+        _ -> True
 
 convertBlock :: Block -> Result ()
 convertBlock (Block stmts) = do
@@ -173,24 +201,32 @@ convertStmt x = case x of
         lthen <- incLabels
         lelse <- incLabels
         modify $ liftIfLabels (\_ -> Just (lthen, lelse))
-        _ <- convertExpr expr
+        v <- convertExpr expr
         modify $ liftIfLabels (\_ -> Nothing)
-        tell $ singleton $ QLabel lthen
-        convertBlock $ Block [stmt]
-        tell $ singleton $ QLabel lelse
+        case v of
+            VBool True -> convertBlock $ Block [stmt]
+            VBool False -> return ()
+            _ -> do
+                tell $ singleton $ QLabel lthen
+                convertBlock $ Block [stmt]
+                tell $ singleton $ QLabel lelse
     CondElse expr stmt1 stmt2 -> do
         lthen <- incLabels
         lelse <- incLabels
         lend <- incLabels
         modify $ liftIfLabels (\_ -> Just (lthen, lelse))
-        _ <- convertExpr expr
+        v <- convertExpr expr
         modify $ liftIfLabels (\_ -> Nothing)
-        tell $ singleton $ QLabel lthen
-        convertBlock $ Block [stmt1]
-        tell $ singleton $ QJmp lend
-        tell $ singleton $ QLabel lelse
-        convertBlock $ Block [stmt2]
-        tell $ singleton $ QLabel lend
+        case v of
+            VBool True -> convertBlock $ Block [stmt1]
+            VBool False -> convertBlock $ Block [stmt2]
+            _ -> do
+                tell $ singleton $ QLabel lthen
+                convertBlock $ Block [stmt1]
+                tell $ singleton $ QJmp lend
+                tell $ singleton $ QLabel lelse
+                convertBlock $ Block [stmt2]
+                tell $ singleton $ QLabel lend
     While expr stmt -> do
         lwhile <- incLabels
         lcond <- incLabels
@@ -200,9 +236,12 @@ convertStmt x = case x of
         convertBlock $ Block [stmt]
         tell $ singleton $ QLabel lcond
         modify $ liftIfLabels (\_ -> Just (lwhile, lend))
-        _ <- convertExpr expr
+        v <- convertExpr expr
         modify $ liftIfLabels (\_ -> Nothing)
-        tell $ singleton $ QLabel lend
+        case v of
+             VBool False -> return ()
+             VBool True -> tell $ singleton $ QJmp lwhile
+             _ -> tell $ singleton $ QLabel lend
     SExp expr -> convertExpr expr >> return ()
 
 convertItem :: Type -> Item -> Result ()
@@ -235,7 +274,11 @@ convertExpr x = case x of
                 tell $ fromList [QIf v OEQU (VBool True) ltrue
                                 , QJmp lfalse]
         return v
-    ELitInt int-> return $ VInt int
+    ELitInt int -> if abs int < 2^(31 :: Integer) then return $ VInt int
+            else do
+                v <- incVars False
+                tell $ singleton $ QAss v (VInt int)
+                return v
     ELitTrue -> return $ VBool True
     ELitFalse -> return $ VBool False
     EApp ident exprs -> do
@@ -330,10 +373,15 @@ convertExpr x = case x of
                 v1 <- convertExpr expr1
                 case v1 of
                     VBool False -> return v1
+                    VBool True -> do
+                        modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
+                        convertExpr expr2
                     _ -> do
                         tell $ singleton $ QLabel lmid
                         modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
-                        convertExpr expr2
+                        _ <- convertExpr expr2
+                        return v1
+
     EOr expr1 expr2 ->  do
         in_if <- gets if_labels
         case in_if of
@@ -370,10 +418,14 @@ convertExpr x = case x of
                     v1 <- convertExpr expr1
                     case v1 of
                         VBool True -> return v1
+                        VBool False -> do
+                            modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
+                            convertExpr expr2
                         _ -> do
                             tell $ singleton $ QLabel lmid
                             modify $ liftIfLabels (\_ -> Just (ltrue, lfalse))
-                            convertExpr expr2
+                            _ <- convertExpr expr2
+                            return v1
     where
     getConstResult v1 op v2 = case (v1,v2) of
         (VInt n1, VInt n2) -> Just $ case op of
@@ -381,7 +433,7 @@ convertExpr x = case x of
             OSub -> VInt (n1 - n2)
             OMul -> VInt (n1 * n2)
             ODiv -> VInt (quot n1 n2)
-            OMod -> VInt (mod n1 n2)
+            OMod -> VInt (rem n1 n2)
             OLTH -> VBool (n1 < n2)
             OLE -> VBool (n1 <= n2)
             OGTH -> VBool (n1 > n2)

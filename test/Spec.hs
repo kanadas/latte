@@ -33,7 +33,11 @@ runFile v p f = do
         writeFile outf prog
         callCommand $ "gcc -c " ++ outf ++ " -o " ++ objf
         callCommand $ "gcc -no-pie -nostartfiles -lc -o " ++ exef ++ " lib/runtime.o " ++ objf
-        callCommand $ "./" ++ exef ++ " > " ++ resf
+        is_input <- doesFileExist inf
+        if is_input then
+            callCommand $ "./" ++ exef ++ " < " ++ inf ++ " > " ++ resf
+        else
+            callCommand $ "./" ++ exef ++ " > " ++ resf
         res <- readFile resf
         corout <- readFile $ dropExtension f ++ ".output"
         return (res == corout)
@@ -42,6 +46,7 @@ runFile v p f = do
     objf = dropExtension f ++ ".o"
     exef = dropExtension f
     resf = dropExtension f ++ ".res"
+    inf = dropExtension f ++ ".input"
 
 
 run :: Verbosity -> ParseFun Program -> String -> IO String
@@ -73,26 +78,55 @@ foldTests do_exit_fail good_res res path = do
 main :: IO ()
 main = do
     args <- getArgs
-    let do_test_good = not (elem "bad" args) || elem "good" args
-    let do_test_bad = not (elem "good" args) || elem "bad" args
+    let do_test_good = args == [] || elem "good" args
+    let do_test_bad = args == [] || elem "bad" args
+    let do_test_runtime = elem "runtime" args
     let do_exit_fail = elem "fail" args
-    tests_good <- (\\ ["test/lattests/good/core018.lat"]) <$> allFilesIn "test/lattests/good/"
+    tests_good <- allFilesIn "test/lattests/good/"
     tests_bad <- allFilesIn "test/lattests/bad/"
-    res_good <-
-        if do_test_good then liftM reverse $
-            foldM (foldTests do_exit_fail True) [] tests_good
-        else return []
-    res_bad <-
-        if do_test_bad then liftM reverse $
-            foldM (foldTests do_exit_fail False) [] tests_bad
-        else return []
-    let rg = foldl (&&) True res_good
-    let rb = not $ foldl (||) False res_bad
-    if rg then putStrLn "Good tests Succeeded"
-    else putStrLn "Failed good tests: " >>
-        zipWithM_ (\r f -> if r then return () else putStrLn f) res_good tests_good
-    if rb then putStrLn "Bad tests Succeeded"
-    else putStrLn "Failed bad tests: " >>
-        zipWithM_ (\r f -> if not r then return () else putStrLn f) res_bad tests_bad
-    if rg && rb then exitSuccess else exitFailure
+    tests_basic <- allFilesIn "test/mrjp-tests/good/basic/"
+    --tests_gr5 <- allFilesIn "test/mrjp-tests/gr5/" --classes tests
+    tests_bad2 <- allFilesIn "test/mrjp-tests/bad/semantic/"
+    tests_runtime <- allFilesIn "test/mrjp-tests/bad/runtime/"
+    res <- if do_test_good then do
+        res_good <- liftM reverse $ foldM (foldTests do_exit_fail True) [] tests_good
+        let rg = foldl (&&) True res_good
+        if rg then putStrLn "Good tests Succeeded"
+        else putStrLn "Failed good tests: " >>
+            zipWithM_ (\r f -> if r then return () else putStrLn f) res_good tests_good
 
+        res_basic <- liftM reverse $ foldM (foldTests do_exit_fail True) [] tests_basic
+        let rb = foldl (&&) True res_basic
+        if rb then putStrLn "Basic tests Succeeded"
+        else putStrLn "Failed basic tests: " >>
+            zipWithM_ (\r f -> if r then return () else putStrLn f) res_basic tests_basic
+
+        return $ rb && rg
+    else return True
+    res2 <- if do_test_bad then do
+        res_bad <- liftM reverse $ foldM (foldTests do_exit_fail False) [] tests_bad
+        let rb = not $ foldl (||) False res_bad
+        if rb then putStrLn "Bad tests Succeeded"
+        else putStrLn "Failed bad tests: " >>
+            zipWithM_ (\r f -> if not r then return () else putStrLn f) res_bad tests_bad
+
+        res_bad2 <- liftM reverse $ foldM (foldTests do_exit_fail False) [] tests_bad2
+        let rb2 = not $ foldl (||) False res_bad2
+        if rb2 then putStrLn "Bad tests Succeeded"
+        else putStrLn "Failed bad tests: " >>
+            zipWithM_ (\r f -> if not r then return () else putStrLn f) res_bad2 tests_bad2
+
+        return $ rb && rb2
+    else return True
+
+    res3 <- if do_test_runtime then do
+        res_runtime <- liftM reverse $ foldM (foldTests do_exit_fail False) [] tests_runtime
+        let rr = not $ foldl (||) False res_runtime
+        if rr then putStrLn "Bad tests Succeeded"
+        else putStrLn "Failed bad tests: " >>
+            zipWithM_ (\r f -> if not r then return () else putStrLn f) res_runtime tests_runtime
+
+        return rr
+    else return True
+
+    if res && res2 && res3 then exitSuccess else exitFailure
