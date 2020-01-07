@@ -1,0 +1,38 @@
+Autor: Tomasz Kanas 385674
+
+Kompilacja i uruchamianie:
+Zgodnie z instrukcją program kompiluje się poleceniem make (które z kolei używa ghc).
+Uruchamia się przez uruchomienie powstałego po kompilacji pliku wykonywalnego.
+Zgodnie z instrukcją podanie pliku jako argumentu powoduje kompilacje danego pliku,
+pozostałe parametry można poznać podając parametr --help.
+
+Narzędzia i biblioteki:
+Narzędzia:
+- ghc
+- make
+- gcc
+- ld
+Biblioteki (z pliku package.yaml):
+- base >= 4.7 && < 5
+- array
+- containers
+- mtl
+- transformers
+- filepath
+- dlist
+- sort
+
+Struktura katalogów:
+- src: katalog ze źródłami programu
+- lib: katalog z bibliotekami wykożystywanymi podczas linkowania i ich źródłami
+
+Zaimplementowane rozszerzenia:
+- Alokacja (globalna) rejestrów, zgodnie z algorytmem podanym na wykładzie:
+    sprowadzenie do SSA i policzenie kolorowania grafu kolizji
+- Bardzo proste optymalizacje: usuwanie przypisań do nieużywanych zmiennych (po sprowadzeniu do SSA), niepotrzebnych instrukcji skaczących, nieużywanych etykiet i generowanie każdej stałej napisowej raz.
+- Statyczne linkowanie nieużywające libc:
+    całą potrzebną bibliotekę napisałem w asemblerze (załączone źródła), niekorzystając z libc.
+    Jako, że ta wersja nie posiada zwalniania pamięci to implementacja mmalloca jest bardzo prosta
+    (sbrk), ale jest flaga --libc która umożliwia dynamiczne zlinkowanie malloca z libc.
+    Z tego powodu biblioteka nie jest przenośna (gwarantuję działanie tylko na linuxie x86_64).
+

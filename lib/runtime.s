@@ -87,8 +87,8 @@ _printInt_chkcond:
 	ret
 
 _serror:
-    .long 14
-    .ascii "runtime error\12"
+    .long 13
+    .ascii "runtime error"
 
 error:
     pushq $_serror
@@ -148,6 +148,10 @@ _positive_result:
     popq %rdi
     ret
 
+_smalloc_err:
+    .long 24
+    .ascii "Memory allocation failed"
+
 #rdi -> size
 _allocString:
     pushq %rcx
@@ -163,6 +167,14 @@ _allocString:
     andq $-16, %rsp
     addq $4, %rdi   #4 bytes for size
     call malloc
+    test %rax, %rax
+    jne _allocString_success
+    pushq $_smalloc_err
+    call printString
+    movl $60, %eax      #exit
+    movl $1, %edi       #code
+    syscall
+_allocString_success:
     movq %rbp, %rsp
     popq %rbp
     popq %r11

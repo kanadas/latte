@@ -15,11 +15,6 @@ module Quadruples(
     getUsedVariables
 ) where
 
---TODO optimizations:
---remove unused labels
---remove blocks without in edges (besides 0 block)
---remove unused variables
-
 import qualified Data.Map.Strict as Map
 import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Set as Set

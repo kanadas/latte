@@ -172,8 +172,7 @@ type Color = Int
 type LEnv = Map.Map Color Location
 data CState = CState {lenv :: LEnv
     , var_regs :: Map.Map Variable Register
-    , strings :: [String]
-    , n_strings :: Int
+    , strings :: Map.Map String Int
     , labels :: Int
     , locations :: [Location]
     , register_colors :: Map.Map Register Color}
@@ -187,11 +186,8 @@ liftLEnv f s = s{lenv = f (lenv s)}
 liftVarRegs :: (Map.Map Variable Register -> Map.Map Variable Register) -> CState -> CState
 liftVarRegs f s = s{var_regs = f (var_regs s)}
 
-liftStrings :: ([String] -> [String]) -> CState -> CState
+liftStrings :: (Map.Map String Int -> Map.Map String Int) -> CState -> CState
 liftStrings f s = s{strings = f (strings s)}
-
-liftNStrings :: (Int -> Int) -> CState -> CState
-liftNStrings f s = s{n_strings = f (n_strings s)}
 
 liftLabels :: (Int -> Int) -> CState -> CState
 liftLabels f s = s{labels = f (labels s)}
@@ -222,8 +218,13 @@ locationToRegister _ = error "not a register"
 
 allocString :: String -> Result w Int
 allocString str = do
-    modify $ (liftStrings (str:)) . (liftNStrings (+1))
-    gets n_strings
+    strs <- gets strings
+    case strs Map.!? str of
+        Nothing -> do
+            let nr = Map.size strs
+            modify $ liftStrings (Map.insert str nr)
+            return nr
+        Just n -> return n
 
 isRegister :: Location -> Bool
 isRegister (Reg _) = True
@@ -257,13 +258,12 @@ compileProgram types (Program topdefs) =
                 (DList.append acc) <$> (compileTopDef types td)) DList.empty topdefs)
             (CState {lenv = Map.empty
                 , var_regs = Map.empty
-                , strings = []
-                , n_strings = 0
+                , strings = Map.empty
                 , labels = 0
                 , locations = []
                 , register_colors = Map.empty}) in
-    let str_defs = fst (foldr (\str (acc, n) -> (stringDef n str : acc, n + 1))
-                  ([], 1 :: Int) (strings fin_state)) in
+    let str_defs = foldl (\acc (str, n)-> stringDef n str : acc)
+                  [] (Map.assocs $ strings fin_state) in
     unlines $ [".text"] ++
         str_defs ++
         [".global _start",

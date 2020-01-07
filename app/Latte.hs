@@ -7,6 +7,7 @@ import System.Exit ( exitFailure, exitSuccess )
 import System.FilePath
 import System.Process
 import Control.Monad (when)
+import Data.List
 --import Control.Monad.Trans.Reader
 --import Control.Monad.State.Lazy
 --import Control.Monad.Except
@@ -28,10 +29,15 @@ type Verbosity = Int
 putStrV :: Verbosity -> String -> IO ()
 putStrV v s = when (v > 1) $ putStrLn s
 
-runFile :: Verbosity -> ParseFun Program -> FilePath -> IO ()
-runFile v p f = putStrV v f >> readFile f >>= run v p >>= (writeFile outf) >>
-    (callCommand $ "gcc -c " ++ outf ++ " -o " ++ objf) >>
-    (callCommand $ "gcc -no-pie -nostartfiles -lc -o " ++ exef ++ " lib/runtime.o " ++ objf)
+runFile :: Verbosity -> Bool -> ParseFun Program -> FilePath -> IO ()
+runFile v link_libc p f = do
+    putStrV v f
+    readFile f >>= run v p >>= (writeFile outf)
+    callCommand $ "gcc -c " ++ outf ++ " -o " ++ objf
+    if link_libc then
+        callCommand $ "gcc -no-pie -nostartfiles -lc -o " ++ exef ++ " lib/runtime.o " ++ objf
+    else
+        callCommand $ "ld -o " ++ exef ++ " lib/runtime.o lib/malloc.o " ++ objf
     where
     outf = dropExtension f ++ ".s"
     objf = dropExtension f ++ ".o"
@@ -66,15 +72,17 @@ usage = do
     , "  (no arguments)  Parse stdin verbosely."
     , "  (files)         Parse content of files verbosely."
     , "  -v (files)      Verbose mode. Parse content of files verbosely."
+    , "  --libc          Use libc malloc instead of provided one (creates dynamically linked binary instead of statically)"
     ]
   exitFailure
 
 main :: IO ()
 main = do
     args <- getArgs
-    case args of
+    let link_libc = elem "--libc" args
+    let nargs = args \\ ["--libc"]
+    case nargs of
         ["--help"] -> usage
         [] -> getContents >>= run 0 pProgram >>= putStrLn >> exitSuccess
-        "-v":fs -> mapM_ (runFile 2 pProgram) fs >> exitSuccess
-        fs -> mapM_ (runFile 0 pProgram) fs >> exitSuccess
-
+        "-v":fs -> mapM_ (runFile 2 link_libc pProgram) fs >> exitSuccess
+        fs -> mapM_ (runFile 0 link_libc pProgram) fs >> exitSuccess
